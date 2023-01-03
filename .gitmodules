@@ -1,0 +1,9 @@
+[submodule "PyTorch-ENet"]
+	path = PyTorch-ENet
+	url = https://github.com/Redcof/PyTorch-ENet
+[submodule "pytorch_forward_forward"]
+	path = pytorch_forward_forward
+	url = https://github.com/Redcof/pytorch_forward_forward
+[submodule "affinity-loss"]
+	path = affinity-loss
+	url = https://github.com/Redcof/affinity-loss

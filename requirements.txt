@@ -1,0 +1,11 @@
+tensorflow
+keras
+torch
+torchvision
+PIL
+opencv
+numpy
+pandas
+matplotlib
+seaborn
+tqdm
