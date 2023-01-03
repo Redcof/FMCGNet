@@ -10,3 +10,6 @@
 [submodule "pytorch-faster-rcnn"]
     path =  archive/pytorch-faster-rcnn
     url = https://github.com/AlphaJia/pytorch-faster-rcnn
+[submodule "Skip-Attention-GAN"]
+    path = archive/Skip-Attention-GAN
+    url = https://github.com/Redcof/Skip-Attention-GAN
