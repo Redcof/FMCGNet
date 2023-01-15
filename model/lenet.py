@@ -1,12 +1,10 @@
-# Inspired by: https://github.com/ChawDoe/LeNet5-MNIST-PyTorch
-# LeNet paper:  "Gradient-based learning applied to document recognition"
 from torch.nn import Module
 from torch import nn
 
 
-class FMCGNet(Module):
+class LeNet(Module):
     def __init__(self):
-        super(FMCGNet, self).__init__()
+        super(LeNet, self).__init__()
         self.conv1 = nn.Conv2d(1, 6, 5)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(2)
