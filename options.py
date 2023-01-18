@@ -35,15 +35,16 @@ class Options:
                                  default='/Users/soumen/Downloads/Datasets/ActiveTerahertzImagingDataset/'
                                          'THZ_dataset_det_VOC/JPEGImages',
                                  help='path to dataset')
-        self.parser.add_argument('--batchsize', type=int, default=128, help='input batch size')
+        self.parser.add_argument('--batchsize', type=int, default=256, help='input batch size')
         self.parser.add_argument('--isize', type=int, default=128, choices=[128, 64], help='input image size.')
         self.parser.add_argument('--nc', type=int, default=3, help='input image channels')
         self.parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'gpu'],
-                                 help='Device: gpu | cpu | cuda')
+                                 help='Device: gpu | cpu ')
         self.parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment')
         self.parser.add_argument('--dataset', type=str, default='atz', help='name of the dataset')
         self.parser.add_argument('--outf', default='./output', help='folder to output images and model checkpoints')
         self.parser.add_argument('--manualseed', default=47, type=int, help='manual seed')
+        self.parser.add_argument('--print_freq', default=5, type=int, help='Log printing frequency')
         ##
         # Train
         self.parser.add_argument('--phase', type=str, default='train', choices=["train", "val", "test"],
