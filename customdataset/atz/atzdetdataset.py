@@ -64,6 +64,9 @@ class ATZDetDataset(Dataset):
         self.df[['label', 'is_anamoly']] = self.df.apply(_lambda, axis=1, result_type='expand')
 
         self.split()
+        # class counts
+        self.class_proportion = np.array(
+            self.df['is_anamoly'].sort_values().value_counts(normalize=True, sort=False).tolist())
 
     def shuffle(self):
         # shuffle dataframe

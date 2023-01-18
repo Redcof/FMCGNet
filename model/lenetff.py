@@ -1,31 +1,6 @@
 import torch
-import torch.nn as nn
+from torch import nn, optim
 from tqdm import tqdm
-from torch.optim import Adam
-from torchvision.datasets import MNIST
-from torchvision.transforms import Compose, ToTensor, Normalize, Lambda
-from torch.utils.data import DataLoader
-
-
-def MNIST_loaders(train_batch_size=50000, test_batch_size=10000):
-    transform = Compose([
-        ToTensor(),
-        Normalize((0.1307,), (0.3081,)),
-        Lambda(lambda x: torch.flatten(x))])
-
-    train_loader = DataLoader(
-        MNIST('./data/', train=True,
-              download=True,
-              transform=transform),
-        batch_size=train_batch_size, shuffle=True)
-
-    test_loader = DataLoader(
-        MNIST('./data/', train=False,
-              download=True,
-              transform=transform),
-        batch_size=test_batch_size, shuffle=False)
-
-    return train_loader, test_loader
 
 
 def overlay_y_on_x(x, y):
@@ -35,13 +10,15 @@ def overlay_y_on_x(x, y):
     return x_
 
 
-class Net(torch.nn.Module):
+class LeNetFF(nn.Module):
 
-    def __init__(self, dims):
+    def __init__(self, dims, epoch):
         super().__init__()
         self.layers = []
         for d in range(len(dims) - 1):
-            self.layers += [Layer(dims[d], dims[d + 1]).cuda()]
+            self.layers += [
+                Layer(dims[d], dims[d + 1], epoch=epoch)
+            ]
 
     def predict(self, x):
         goodness_per_label = []
@@ -64,12 +41,12 @@ class Net(torch.nn.Module):
 
 class Layer(nn.Linear):
     def __init__(self, in_features, out_features,
-                 bias=True, device=None, dtype=None):
+                 bias=True, device=None, dtype=None, epoch=10):
         super().__init__(in_features, out_features, bias, device, dtype)
         self.relu = torch.nn.ReLU()
-        self.opt = Adam(self.parameters(), lr=0.03)
+        self.opt = optim.Adam(self.parameters(), lr=0.03)
         self.threshold = 2.0
-        self.num_epochs = 1000
+        self.num_epochs = epoch
 
     def forward(self, x):
         x_direction = x / (x.norm(2, 1, keepdim=True) + 1e-4)
@@ -94,21 +71,11 @@ class Layer(nn.Linear):
         return self.forward(x_pos).detach(), self.forward(x_neg).detach()
 
 
-if __name__ == "__main__":
-    torch.manual_seed(1234)
-    train_loader, test_loader = MNIST_loaders()
-
-    net = Net([784, 500, 500])
-    x, y = next(iter(train_loader))
-    x, y = x.cuda(), y.cuda()
+def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
+    net = LeNetFF([784, 500, 500], opt.niter)
+    net.to(opt.device)
+    (x, y), meta = next(iter(train_loader))
     x_pos = overlay_y_on_x(x, y)
     rnd = torch.randperm(x.size(0))
     x_neg = overlay_y_on_x(x, y[rnd])
     net.train(x_pos, x_neg)
-
-    print('train error:', 1.0 - net.predict(x).eq(y).float().mean().item())
-
-    x_te, y_te = next(iter(test_loader))
-    x_te, y_te = x_te.cuda(), y_te.cuda()
-
-    print('test error:', 1.0 - net.predict(x_te).eq(y_te).float().mean().item())

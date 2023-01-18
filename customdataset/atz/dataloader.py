@@ -23,11 +23,12 @@ CLASSE_IDX = ["NORMAL0", "UNKNOWN", "CP", "MD", "GA", "KK", "SS", "KC", "WB", "L
 
 
 ##
-def load_atz_data(opt):
+def load_atz_data(opt, transform=None):
     """ Load Data
 
     Args:
         opt ([type]): Argument Parser
+        transform: Torch transforms
 
     Raises:
         IOError: Cannot Load Dataset
@@ -44,7 +45,7 @@ def load_atz_data(opt):
 
     patch_dataset_csv = opt.atz_patch_db
     atz_ablation = opt.atz_ablation
-    device = torch.device("cuda:0" if opt.device != 'cpu' else "cpu")
+    torch_device = torch.device("cuda:0" if opt.device is not 'cpu' else "cpu")
 
     try:
         atz_classes = ast.literal_eval(opt.atz_classes)
@@ -108,17 +109,18 @@ def load_atz_data(opt):
         else:
             idx = CLASSE_IDX.index(label)
             onehot_labels[0, idx] = 1
-            return onehot_labels, anomaly
+            return onehot_labels, idx
 
-    transform = transforms.Compose([
-        transforms.Resize((opt.isize, opt.isize)),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,)),
-    ])
+    if transform is None:
+        transform = transforms.Compose([
+            transforms.Resize((opt.isize, opt.isize)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
+        ])
 
     train_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
                              atz_dataset_train_or_test_txt=str(curr / 'train.txt'),
-                             device=device,
+                             device=torch_device,
                              classes=atz_classes,
                              patch_size=opt.isize,
                              patch_overlap=opt.atz_patch_overlap,
@@ -132,7 +134,7 @@ def load_atz_data(opt):
 
     test_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
                             atz_dataset_train_or_test_txt=str(curr / 'test.txt'),
-                            device=device,
+                            device=torch_device,
                             classes=atz_classes,
                             patch_size=opt.isize,
                             patch_overlap=opt.atz_patch_overlap,
@@ -146,7 +148,7 @@ def load_atz_data(opt):
 
     valid_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
                              atz_dataset_train_or_test_txt=str(curr / 'val.txt'),
-                             device=device,
+                             device=torch_device,
                              classes=atz_classes,
                              patch_size=opt.isize,
                              patch_overlap=opt.atz_patch_overlap,
