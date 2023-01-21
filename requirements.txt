@@ -2,6 +2,7 @@ tensorflow
 keras
 torch
 torchvision
+tesnorboard
 PIL
 opencv
 numpy
@@ -10,3 +11,4 @@ matplotlib
 seaborn
 tqdm
 patchify
+protobuf==3.19

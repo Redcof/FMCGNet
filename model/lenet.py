@@ -73,7 +73,7 @@ class LeNet(nn.Module):
         # Perform the forward pass of the LeNet architecture
         x = self.pool(self.activation(self.conv1(x)))
         x = self.pool(self.activation(self.conv2(x)))
-        x = x.view(-1, self.fx * self.fx * self.f2)  # flatten
+        x = x.view(-1, self.fx * self.fx * self.f2)  # flatten(but batch wise)
         x = self.activation(self.fc1(x))
         x = self.activation(self.fc2(x))
         x = self.activation(self.fc3(x))
@@ -99,7 +99,6 @@ class LeNet(nn.Module):
         return x
 
 
-@staticmethod
 def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     # helper function to show an image
     # (used in the `plot_classes_preds` function below)

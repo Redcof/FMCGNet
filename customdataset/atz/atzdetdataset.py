@@ -12,6 +12,8 @@ from empatches import EMPatches
 from torch.utils.data import Dataset
 from torchvision.transforms import transforms
 
+from model.lenetff import overlay_y_on_x
+
 
 class ATZDetDataset(Dataset):
     CACHE_ITEM_LIMIT = 5  # 5 files
@@ -19,7 +21,7 @@ class ATZDetDataset(Dataset):
     ABNORMAL = 1
 
     def __init__(self, atz_patch_dataset_csv, img_dir, phase, atz_dataset_train_or_test_txt=None, transform=None,
-                 classes=(), subjects=(), ablation=0, label_transform=None, device="cpu",
+                 classes=(), subjects=(), ablation=0, label_transform=None, device="cpu", ff=False,
                  patch_size=128, patch_overlap=0.2, balanced=False,
                  train_split=None, test_split=None,
                  global_wavelet_transform=lambda x: x, random_state=47):
@@ -56,6 +58,7 @@ class ATZDetDataset(Dataset):
         self.filter(atz_dataset_train_or_test_txt, classes, subjects)
         self.shuffle()
         self.ablation = ablation
+        self.ff = ff
 
         def _lambda(record, **kwargs):
             return self.label_transform(record.image, record.label_txt, record.anomaly_size)
@@ -177,7 +180,7 @@ class ATZDetDataset(Dataset):
             tensor_img = transforms.ToTensor()(image_patch)
         # cv2.imshow("patch", image)
         # return (tensor_img.to(self.device), torch.from_numpy(label).to(self.device)), metadata
-        return (tensor_img.to(self.device), torch.tensor(class_id, dtype=torch.uint8).to(self.device)), metadata
+        return (tensor_img.to(self.device), torch.tensor(class_id).to(self.device)), metadata
 
     def cache_limit_check(self):
         """

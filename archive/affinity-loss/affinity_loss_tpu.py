@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 import tensorflow.keras.backend as K
 
-class ClusteringAffinity(layers.Layer):
+class ClusteringAffinity(layers.FFLayer):
     def __init__(self, n_classes, n_centers, sigma, **kwargs):
         self.n_classes = n_classes
         self.n_centers = n_centers

@@ -26,7 +26,7 @@ classes = CLASSE_IDX
 if __name__ == '__main__':
 
     opt = Options().parse()
-    opt.device = "cuda:0" if opt.device is not 'cpu' else "cpu"
+    opt.device = "cuda:0" if opt.device != 'cpu' else "cpu"
 
     torch.manual_seed(opt.manualseed)
 
