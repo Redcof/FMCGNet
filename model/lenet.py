@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import cv2
 import numpy as np
 import torch
@@ -145,7 +147,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
                 color=("green" if preds[idx] == labels[idx].item() else "red"))
         return fig
 
-    def compute_multiclass_auc(epoch_idx, num_epochs, model, test_loader, meta_dict):
+    def compute_multiclass_auc(epoch_idx, num_epochs, model, test_loader, meta_dict, detailed_output=False):
         print("\nTesting... epoch:[%d/%d]" % (epoch_idx + 1, num_epochs))
         model.eval()
         labels_all, probs_all = [], []
@@ -159,6 +161,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         probs_all = np.concatenate(probs_all)
         n_classes = probs_all.shape[1]
         auc_list = []
+        auc_dict = defaultdict(lambda: [])
         for class_idx in tqdm(range(n_classes), leave=False):
             labels_binary = (labels_all == class_idx).astype(int)
             try:
@@ -167,9 +170,15 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
                 # this happens when a batch contains negative or positive samples as ground_truth
                 auc = 0.0
             auc_list.append(auc)
-        auc = np.mean(auc_list)
+            auc_dict[class_idx].append(auc)
+        mean_auc = np.mean(auc_list)
+        for key, values in auc_dict.items():
+            auc_dict[key] = np.mean(values)
         model.train()
-        return auc
+        if detailed_output:
+            return mean_auc, auc_list, auc_dict
+        else:
+            return mean_auc
 
     def train_one_batch(model, images, labels):
         optimizer.zero_grad()
@@ -243,8 +252,12 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         train_one_epoch(epoch_idx, num_epochs, net, meta_dict)
 
         # test
-        auc = compute_multiclass_auc(epoch_idx, num_epochs, net, test_loader, meta_dict)
+        detailed = True
+        auc, auc_ls, auc_dict = compute_multiclass_auc(epoch_idx, num_epochs, net, test_loader, meta_dict,
+                                                       detailed_output=detailed)
         writer.add_scalar('Testing AUC', auc, epoch_idx)
+        for cls_idx, auc in auc_dict.items():
+            writer.add_scalar('Testing AUC[%s]' % classes[cls_idx], auc, epoch_idx)
         print(f"Testing epoch:[{epoch_idx + 1}d/{num_epochs}] Micro-averaged "
-              f"One-vs-Rest ROC AUC score:{auc:.2f}")
+              f"AUC score:{auc:.2f}")
     print('Finished LeNet Training')
