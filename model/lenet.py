@@ -16,6 +16,7 @@ from tqdm import tqdm
 from torchvision import transforms
 
 from customdataset.atz.dataloader import load_atz_data
+from model.FocalLoss import FocalLoss
 from model.dcn import DeformableConv2d
 
 
@@ -226,17 +227,21 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     net = LeNet(if0=opt.isize, channels=opt.nc, num_classes=len(classes), deformable=opt.deformable)
 
     # Define the optimizer
-    optimizer = optim.Adam(net.parameters(), lr=0.001)
+    optimizer = optim.Adam(net.parameters(), lr=opt.lr)
     net.to(opt.device)  # move to device
 
+    class_balance_weights = 1.0 - train_loader.dataset.class_proportion
+    class_balance_weights = torch.from_numpy(class_balance_weights.astype('float32')).to(opt.device)
     # loss functions
     if opt.loss == 'SFL':
-        criterion_class_loss = ops.sigmoid_focal_loss()
+        criterion_class_loss = lambda pred, tgt: ops.sigmoid_focal_loss(pred, tgt, alpha=class_balance_weights,
+                                                                        reduction='mean')
+    elif opt.loss == 'FL':
+        criterion_class_loss = FocalLoss(alpha=class_balance_weights, gamma=2.0)
     elif opt.loss == 'BCE':
-        class_balance_weights = 1.0 - train_loader.dataset.class_proportion
         print(type(torch.from_numpy(class_balance_weights)))
         criterion_class_loss = nn.CrossEntropyLoss(
-            weight=torch.from_numpy(class_balance_weights.astype('float32')).to(opt.device))
+            weight=class_balance_weights)
     else:
         # default cross entropy loss
         criterion_class_loss = nn.CrossEntropyLoss()

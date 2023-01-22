@@ -41,7 +41,7 @@ class Options:
                                  help='Enable deformable convolution layers or not')
         self.parser.add_argument('--ff', action='store_true', default=False,
                                  help='Enable forward-forward algorithm or not')
-        self.parser.add_argument('--loss', type=str, default='CE', choices=['CE', 'SFL', 'BCE'],
+        self.parser.add_argument('--loss', type=str, default='CE', choices=['CE', 'SFL', 'BCE', 'FL'],
                                  help='CEL:Categorical Cross-Entropy Loss, SFL: Sigmoid focal loss,'
                                       ' BCEL: Balanced Cross-entropy loss')
         self.parser.add_argument('--isize', type=int, default=128, choices=[128, 64], help='input image size.')
@@ -59,6 +59,7 @@ class Options:
                                  help='train, val, test, etc')
         self.parser.add_argument('--iter', type=int, default=0, help='Start from iteration i')
         self.parser.add_argument('--niter', type=int, default=2, help='number of epochs to train for')
+        self.parser.add_argument('--lr', type=float, default=0.001, help='Learning rate default:0.001')
         # ATZ dataset
         self.parser.add_argument('--atz_patch_db',
                                  default="../customdataset/atz/atz_patch_dataset__3_128_36_v2_10%_30_99%.csv",

@@ -159,9 +159,9 @@ def load_atz_data(opt, transform=None):
                              random_state=opt.manualseed,
                              label_transform=label_transform,
                              global_wavelet_transform=wavelet_transform if opt.atz_wavelet_denoise else None)
-    opt.log("Dataset '%s' => Normal:Abnormal = %d:%d" % ("train", train_ds.normal_count, train_ds.abnormal_count))
-    opt.log("Dataset '%s' => Normal:Abnormal = %d:%d" % ("test", test_ds.normal_count, test_ds.abnormal_count))
-    opt.log("Dataset '%s' => Normal:Abnormal = %d:%d" % ("val", valid_ds.normal_count, valid_ds.abnormal_count))
+    opt.log("Train Dataset '%s' => Normal:Abnormal = %d:%d" % ("train", train_ds.normal_count, train_ds.abnormal_count))
+    opt.log("Test Dataset '%s' => Normal:Abnormal = %d:%d" % ("test", test_ds.normal_count, test_ds.abnormal_count))
+    opt.log("Validation Dataset '%s' => Normal:Abnormal = %d:%d" % ("val", valid_ds.normal_count, valid_ds.abnormal_count))
 
     ## DATALOADER
     train_dl = DataLoader(dataset=train_ds, batch_size=opt.batchsize, shuffle=False, drop_last=True)
