@@ -26,6 +26,7 @@ class DeformableConv2d(nn.Module):
                                      kernel_size=kernel_size,
                                      stride=stride,
                                      padding=self.padding,
+                                     dilation=self.dilation,
                                      bias=True)
 
         nn.init.constant_(self.offset_conv.weight, 0.)
@@ -36,6 +37,7 @@ class DeformableConv2d(nn.Module):
                                         kernel_size=kernel_size,
                                         stride=stride,
                                         padding=self.padding,
+                                        dilation=self.dilation,
                                         bias=True)
 
         nn.init.constant_(self.modulator_conv.weight, 0.)
@@ -46,6 +48,7 @@ class DeformableConv2d(nn.Module):
                                       kernel_size=kernel_size,
                                       stride=stride,
                                       padding=self.padding,
+                                      dilation=self.dilation,
                                       bias=bias)
 
     def forward(self, x):
@@ -54,7 +57,7 @@ class DeformableConv2d(nn.Module):
 
         offset = self.offset_conv(x)  # .clamp(-max_offset, max_offset)
         modulator = 2. * torch.sigmoid(self.modulator_conv(x))
-
+        # op = (n - (k * d - 1) + 2p / s)
         x = torchvision.ops.deform_conv2d(input=x,
                                           offset=offset,
                                           weight=self.regular_conv.weight,
