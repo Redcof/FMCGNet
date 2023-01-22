@@ -45,7 +45,7 @@ def load_atz_data(opt, transform=None):
 
     patch_dataset_csv = opt.atz_patch_db
     atz_ablation = opt.atz_ablation
-    torch_device = torch.device("cuda:0" if opt.device is not 'cpu' else "cpu")
+    torch_device = torch.device("cuda:0" if opt.device != 'cpu' else "cpu")
 
     try:
         atz_classes = ast.literal_eval(opt.atz_classes)
