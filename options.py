@@ -41,7 +41,7 @@ class Options:
                                  help='Enable deformable convolution layers or not')
         self.parser.add_argument('--ff', action='store_true', default=False,
                                  help='Enable forward-forward algorithm or not')
-        self.parser.add_argument('--loss', type=str, default='CEL', choices=['CE', 'SFL', 'BCE'],
+        self.parser.add_argument('--loss', type=str, default='CE', choices=['CE', 'SFL', 'BCE'],
                                  help='CEL:Categorical Cross-Entropy Loss, SFL: Sigmoid focal loss,'
                                       ' BCEL: Balanced Cross-entropy loss')
         self.parser.add_argument('--isize', type=int, default=128, choices=[128, 64], help='input image size.')

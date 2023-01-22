@@ -1,3 +1,5 @@
+import os
+import pathlib
 from collections import defaultdict
 
 import cv2
@@ -239,6 +241,9 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     # criterion_bbox_loss = nn.SmoothL1Loss()
 
     # Train the network
+    max_auc = 0.0
+    weight_dir = pathlib.Path(opt.outf) / opt.name / "weight"
+    os.makedirs(str(weight_dir), exist_ok=True)
     for epoch_idx in range(num_epochs):
         meta_dict = dict(
             train_running_loss=0.0,
@@ -255,9 +260,15 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         detailed = True
         auc, auc_ls, auc_dict = compute_multiclass_auc(epoch_idx, num_epochs, net, test_loader, meta_dict,
                                                        detailed_output=detailed)
+        if auc > max_auc:
+            max_auc = auc
+            print("Max AUC:", auc, "Epoch: ", epoch_idx+1)
+        # save the model
+        torch.save({'epoch': epoch_idx, 'state_dict': net.state_dict()},
+                   f'{str(weight_dir)}/net_%d_%f.pth' % (epoch_idx, auc))
         writer.add_scalar('Testing AUC', auc, epoch_idx)
         for cls_idx, auc in auc_dict.items():
             writer.add_scalar('Testing AUC[%s]' % classes[cls_idx], auc, epoch_idx)
         print(f"Testing epoch:[{epoch_idx + 1}d/{num_epochs}] Micro-averaged "
-              f"AUC score:{auc:.2f}")
+              f"AUC score:{auc:.2f}", auc_dict)
     print('Finished LeNet Training')

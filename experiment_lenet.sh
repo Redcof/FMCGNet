@@ -11,6 +11,7 @@ python model/train_lenet.py \
   --niter 50 \
   --dataroot $DATA_ROOT \
   --dataset atz \
+  --loss CE\
   --atz_patch_db customdataset/atz/atz_patch_dataset__3_128_36_v2_10%_30_99%.csv \
   --area_threshold 0.05 \
   --atz_classes "['KK', 'CK', 'CL', 'MD', 'SS', 'GA']" \
