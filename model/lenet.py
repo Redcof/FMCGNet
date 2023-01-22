@@ -232,9 +232,11 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     # loss functions
     if opt.loss == 'SFL':
         criterion_class_loss = ops.sigmoid_focal_loss()
-    elif opt.loss == 'BEC':
+    elif opt.loss == 'BCE':
         class_balance_weights = 1.0 - train_loader.dataset.class_proportion
-        criterion_class_loss = nn.CrossEntropyLoss(weight=class_balance_weights)
+        print(type(torch.from_numpy(class_balance_weights)))
+        criterion_class_loss = nn.CrossEntropyLoss(
+            weight=torch.from_numpy(class_balance_weights.astype('float32')).to(opt.device))
     else:
         # default cross entropy loss
         criterion_class_loss = nn.CrossEntropyLoss()
@@ -262,7 +264,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
                                                        detailed_output=detailed)
         if auc > max_auc:
             max_auc = auc
-            print("Max AUC:", auc, "Epoch: ", epoch_idx+1)
+            print("Max AUC:", auc, "Epoch: ", epoch_idx + 1)
         # save the model
         torch.save({'epoch': epoch_idx, 'state_dict': net.state_dict()},
                    f'{str(weight_dir)}/net_%d_%f.pth' % (epoch_idx, auc))
@@ -270,5 +272,8 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         for cls_idx, auc in auc_dict.items():
             writer.add_scalar('Testing AUC[%s]' % classes[cls_idx], auc, epoch_idx)
         print(f"Testing epoch:[{epoch_idx + 1}d/{num_epochs}] Micro-averaged "
-              f"AUC score:{auc:.2f}", auc_dict)
+              f"AUC score:{auc:.2f}", end="Class wise AUC [")
+        for class_idx, cls_auc in auc_dict.items():
+            print("%s:%0.2f, " % (classes[class_idx], cls_auc), end="")
+        print("]")
     print('Finished LeNet Training')

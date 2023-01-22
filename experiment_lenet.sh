@@ -6,14 +6,15 @@ export DATA_ROOT="/Users/soumen/Downloads/Datasets/ActiveTerahertzImagingDataset
 export DATA_ROOT="/mnt/c/Users/dndlssardar/Downloads/THZ_dataset_det_VOC/JPEGImages"                             # wsl
 
 python model/train_lenet.py \
-  --name exp1_lenet_defaul \
+  --name exp2_lenet_defaul_BCE \
   --phase train\
   --niter 50 \
   --dataroot $DATA_ROOT \
   --dataset atz \
-  --loss CE\
+  --loss BCE\
   --atz_patch_db customdataset/atz/atz_patch_dataset__3_128_36_v2_10%_30_99%.csv \
   --area_threshold 0.05 \
   --atz_classes "['KK', 'CK', 'CL', 'MD', 'SS', 'GA']" \
   --atz_wavelet "{'wavelet':'sym4', 'method':'VisuShrink','level':3, 'mode':'hard'}" \
   --manualseed 47
+  # --atz_wavelet_denoise\
