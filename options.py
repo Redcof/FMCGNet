@@ -35,7 +35,7 @@ class Options:
                                  default='/Users/soumen/Downloads/Datasets/ActiveTerahertzImagingDataset/'
                                          'THZ_dataset_det_VOC/JPEGImages',
                                  help='path to dataset')
-        self.parser.add_argument('--batchsize', type=int, default=128, help='input batch size')
+        self.parser.add_argument('--batchsize', type=int, default=256, help='input batch size')
         self.parser.add_argument('--dilation', type=int, default=1, help='Dilation value for LeNet models')
         self.parser.add_argument('--deformable', action='store_true', default=False,
                                  help='Enable deformable convolution layers or not')

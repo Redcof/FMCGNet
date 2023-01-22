@@ -39,17 +39,19 @@ class LeNetFF(nn.Module):
                 FCFFOrigLayer(dims[d], dims[d + 1], epoch=epoch)
             ]
 
-    def predict(self, x):
+    def predict(self, batch_x, n_classes):
         goodness_per_label = []
-        for label in range(10):
-            h = overlay_y_on_x_batch(x, label, self.num_class)
+        for label in range(n_classes):
+            y_label = [label] * len(batch_x)
+            batch_h = overlay_y_on_x_batch(batch_x, y_label, self.num_class)
+            batch_h = batch_h.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
             goodness = []
             for layer in self.layers:
-                h = layer(h)
-                goodness += [h.pow(2).mean(1)]
+                batch_h = layer(batch_h)
+                goodness += [batch_h.pow(2).mean(1)]
             goodness_per_label += [sum(goodness).unsqueeze(1)]
         goodness_per_label = torch.cat(goodness_per_label, 1)
-        return goodness_per_label.argmax(1)
+        return goodness_per_label.argmax(1), goodness_per_label
 
     def train(self, x_pos, x_neg):
         h_pos, h_neg = x_pos, x_neg
@@ -100,15 +102,17 @@ class FCFFOrigLayer(FFLayer):
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
 
     def forward(self, x):
-        x_direction = x / (x.norm(2, 1, keepdim=True) + 1e-4)
-        x = self.activation(self.fc(x_direction))
+        x = x / (x.norm(2, 1, keepdim=True) + 1e-4) if self.layer_norm else x
+        x = self.activation(self.fc(x))
         return x
 
 
 class FCFFLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
-                 activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.03, criterion=None):
-        super().__init__(goodness_threshold=goodness_threshold, epoch=epoch, activation=activation, criterion=criterion)
+                 activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.03,
+                 criterion=None):
+        super().__init__(goodness_threshold=goodness_threshold,
+                         epoch=epoch, activation=activation, criterion=criterion)
         self.fc = nn.Linear(in_features, out_features, dtype=dtype)
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
 
@@ -147,6 +151,17 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
             net.train(x_pos, x_neg)
         except Exception as e:
             print(e)
+
+    with torch.no_grad():
+        print("Testing..")
+        num_batches = len(test_loader)
+        for idx, ((batch_x, batch_y), meta) in enumerate(test_loader):
+            print("Batch: [%d/%d]" % (idx + 1, num_batches))
+            try:
+                goodness = net.predict(batch_x, len(classes))
+                print(goodness)
+            except Exception as e:
+                print(e)
 
 
 def train_loop2(opt, classes, writer, train_loader, test_loader, val_loader):
