@@ -61,20 +61,20 @@ class LeNet(nn.Module):
         self.conv5 = conv(in_channels=f4, out_channels=f5, kernel_size=k5, stride=s5, padding=p5,
                           dilation=d5)
 
-        if sample_batch is not None:
-            # As original LeNet designed for 32x32
-            # images patches, we need to calculate
-            # feature map size for other image dimensions.
-            # Calculating the feature map size after
-            # convolution and pooling before moving
-            # into fc layers
-            x = sample_batch
-            x = self.pool(self.activation(self.conv1(x)))
-            x = self.pool(self.activation(self.conv2(x)))
-            x = self.activation(self.conv3(x))
-            x = self.activation(self.conv4(x))
-            x = self.activation(self.conv5(x))
-            self.fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
+
+        # As original LeNet designed for 32x32
+        # images patches, we need to calculate
+        # feature map size for other image dimensions.
+        # Calculating the feature map size after
+        # convolution and pooling before moving
+        # into fc layers
+        x = sample_batch
+        x = self.pool(self.activation(self.conv1(x)))
+        x = self.pool(self.activation(self.conv2(x)))
+        x = self.activation(self.conv3(x))
+        x = self.activation(self.conv4(x))
+        x = self.activation(self.conv5(x))
+        self.fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
 
         self.fc1 = nn.Linear(self.fc_fx_size, fc1o)
         self.fc2 = nn.Linear(fc1o, fc2o)

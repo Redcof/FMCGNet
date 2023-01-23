@@ -1,8 +1,11 @@
-import cv2
+import os
+import pathlib
+from abc import abstractmethod
+
+import numpy as np
+import sklearn
 import torch
-from matplotlib import pyplot as plt
 from torch import nn, optim
-from tqdm import tqdm
 
 from model.dcn import DeformableConv2d
 
@@ -30,28 +33,51 @@ def overlay_y_on_x(x, y, n_classes, inplace=False):
 class LeNetFF(nn.Module):
     LAYER_NO = 0
 
-    def __init__(self, epoch, num_class, dims=(784, 500, 500)):
+    def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001):
         super().__init__()
-        self.num_class = num_class
+        self.num_class = num_classes
         self.layers = []
-        for d in range(len(dims) - 1):
-            self.layers += [
-                FCFFOrigLayer(dims[d], dims[d + 1], epoch=epoch)
-            ]
+        k1, f1, s1, p1, d1 = 5, 6, 1, 0, 2
+        k2, f2, s2, p2, d2 = 5, 16, 1, 0, 2
+        ps = 2
+        fc1o = 120
+        fc2o = 84
+
+        self.conv1 = FFConvLayer(in_channels=channels, out_channels=f1, kernel_size=k1, stride=s1, padding=p1,
+                                 dilation=d1, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr)
+        self.conv2 = FFConvLayer(in_channels=f1, out_channels=f2, kernel_size=k2, stride=s2, padding=p2,
+                                 dilation=d2, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr)
+
+        x = sample_batch
+        x = self.conv1(x)
+        x = self.conv2(x)
+        fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
+
+        self.flatten = FFFlatten()
+        self.fc1 = FFFCLayer(fc_fx_size, fc1o, lr=lr)
+        laynorm = FFLayerNorm(1, eps=1e-5, elementwise_affine=False)
+        self.fc2 = FFFCLayer(fc1o, fc2o, lr=lr)
+        self.fc3 = FFFCLayer(fc2o, num_classes, lr=lr)
+        # self.softmax = nn.Softmax(dim=num_classes)
+        self.layers = [
+            self.conv1, self.conv2, self.flatten, self.fc1, self.fc2, self.fc3
+        ]
 
     def predict(self, batch_x, n_classes):
         goodness_per_label = []
         for label in range(n_classes):
             y_label = [label] * len(batch_x)
-            batch_h = overlay_y_on_x_batch(batch_x, y_label, self.num_class)
-            batch_h = batch_h.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
+            batch_x = overlay_y_on_x_batch(batch_x, y_label, self.num_class)
+            # batch_x = self.flatten(batch_x)  # flatten(but batch wise)
             goodness = []
             for layer in self.layers:
-                batch_h = layer(batch_h)
-                goodness += [batch_h.pow(2).mean(1)]
+                batch_x = layer(batch_x)
+                layer_goodness = layer.goodness(batch_x)
+                if layer_goodness is not None:
+                    goodness += [batch_x.pow(2).mean(1)]
             goodness_per_label += [sum(goodness).unsqueeze(1)]
         goodness_per_label = torch.cat(goodness_per_label, 1)
-        return goodness_per_label.argmax(1), goodness_per_label
+        return goodness_per_label.argmax(1)
 
     def train(self, x_pos, x_neg):
         h_pos, h_neg = x_pos, x_neg
@@ -61,18 +87,23 @@ class LeNetFF(nn.Module):
 
 
 class FFLayer(nn.Module):
-    def __init__(self, goodness_threshold=2.0, epoch=10, activation=None, criterion=None):
+    def __init__(self, goodness_threshold=2.0, layer_norm=True, epoch=10, activation=None, criterion=None):
         super().__init__()
         LeNetFF.LAYER_NO += 1
         self.layer_no = LeNetFF.LAYER_NO
         self.threshold = goodness_threshold
         self.num_epochs = epoch
+        self.layer_norm = layer_norm
         self.activation = torch.nn.ReLU() if activation is None else activation
         self.criterion = self.calculate_loss if criterion is None else criterion
 
+    @abstractmethod
+    def goodness(self, x):
+        return None
+
     def calculate_loss(self, f_pos, f_neg):
-        goodness_pos = f_pos.pow(2).mean(1)
-        goodness_neg = f_neg.pow(2).mean(1)
+        goodness_pos = self.goodness(f_pos)
+        goodness_neg = self.goodness(f_neg)
         # The following loss pushes pos (neg) samples to
         # values larger (smaller) than the self.threshold.
         loss = torch.log(1 + torch.exp(torch.cat([
@@ -94,74 +125,142 @@ class FFLayer(nn.Module):
         return self.forward(x_pos).detach(), self.forward(x_neg).detach()
 
 
-class FCFFOrigLayer(FFLayer):
+class FFFlatten(nn.Flatten):
+    def __int__(self, *args, **kwargs):
+        super(FFFlatten, self).__int__(*args, **kwargs)
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFLayerNorm(nn.LayerNorm):
+    def __int__(self, *args, **kwargs):
+        super(FFLayerNorm, self).__int__(*args, **kwargs)
+
+    def goodness(self, x):
+        return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFFCLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
-                 activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.03, criterion=None):
-        super().__init__(goodness_threshold=goodness_threshold, epoch=epoch, activation=activation, criterion=criterion)
+                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
+                 criterion=None):
+        super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
+                         activation=activation, criterion=criterion)
         self.fc = nn.Linear(in_features, out_features, dtype=dtype)
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
 
     def forward(self, x):
-        x = x / (x.norm(2, 1, keepdim=True) + 1e-4) if self.layer_norm else x
         x = self.activation(self.fc(x))
         return x
 
+    def goodness(self, x):
+        return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
 
-class FCFFLayer(FFLayer):
+
+class FFFCOrigLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
-                 activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.03,
+                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
                  criterion=None):
-        super().__init__(goodness_threshold=goodness_threshold,
-                         epoch=epoch, activation=activation, criterion=criterion)
+        super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
+                         activation=activation, criterion=criterion)
         self.fc = nn.Linear(in_features, out_features, dtype=dtype)
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
 
     def forward(self, x):
-        x = self.activation(self.self.fc(x))
+        x_direction = x / x.norm(2, 1, keepdim=True) + 1e-4
+        x = self.activation(self.fc(x_direction))
         return x
 
+    def goodness(self, x):
+        return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
 
-class ConvLayer(FFLayer):
+
+class FFConvLayer(FFLayer):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, deformable=False,
-                 activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.03, criterion=None):
-        super().__init__(goodness_threshold=goodness_threshold, epoch=epoch, activation=activation, criterion=criterion)
+                 pool_kernel=None, pool_stride=None,
+                 activation=None, goodness_threshold=2.0, layer_norm=False, epoch=10, optimizer=None, lr=0.0001,
+                 criterion=None):
+        super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
+                         activation=activation, criterion=criterion)
         # selection of convolution
         conv = DeformableConv2d if deformable else nn.Conv2d
         self.conv = conv(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size,
                          stride=stride, padding=padding, dilation=dilation)
+        self.pool = None
+        if pool_kernel is not None:
+            self.pool = nn.MaxPool2d(kernel_size=pool_kernel, stride=pool_stride)  # non-learning layer, we can reuse
         self.optimizer = optim.Adam(self.conv.parameters(), lr=lr) if optimizer is None else optimizer
 
     def forward(self, x):
-        x = self.activation(self.self.conv(x))
+        x = self.activation(self.conv(x))
+        if self.pool is not None:
+            x = self.pool(x)
+        if self.layer_norm:
+            x = x.norm(2, 1, keepdim=True) + 1e-4
         return x
+
+    def goodness(self, x):
+        return x.pow(2).mean(dim=(1, 2, 3))  # positive mean square as goodness
 
 
 def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     num_batches = len(train_loader)
-    net = LeNetFF(opt.niter, len(classes), dims=(3 * 128 * 128, 500, 50))
+    sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
+    net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter, channels=3,
+                  deformable=opt.deformable)
+    print("================Model Summary===============")
+    op_dir = pathlib.Path(opt.outf) / opt.name
+    os.makedirs(str(op_dir), exist_ok=True)
+    with open(str(op_dir / "model_summary.txt"), "w") as fp:
+        s = "\n%s\n" % net
+        fp.write(opt.name)
+        fp.write(s)
+        print(s)
+    print("============================================")
     net.to(opt.device)
     for idx, ((batch_x, batch_y), meta) in enumerate(train_loader):
         print("Batch: [%d/%d]" % (idx, num_batches))
-        try:
-            x_pos = overlay_y_on_x_batch(batch_x, batch_y, len(classes))
-            rnd = torch.randperm(batch_x.size(0))
-            x_neg = overlay_y_on_x_batch(batch_x, batch_y[rnd], len(classes))
-            x_pos = x_pos.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
-            x_neg = x_neg.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
-            net.train(x_pos, x_neg)
-        except Exception as e:
-            print(e)
+        x_pos = overlay_y_on_x_batch(batch_x, batch_y, len(classes))
+        rnd = torch.randperm(batch_x.size(0))
+        x_neg = overlay_y_on_x_batch(batch_x, batch_y[rnd], len(classes))
+        # x_pos = x_pos.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
+        # x_neg = x_neg.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
+        net.train(x_pos, x_neg)
+        break  # TODO dbg remove before testing
 
     with torch.no_grad():
         print("Testing..")
         num_batches = len(test_loader)
+        acc_list = []
+        fpr_list = []
+        f1_list = []
         for idx, ((batch_x, batch_y), meta) in enumerate(test_loader):
             print("Batch: [%d/%d]" % (idx + 1, num_batches))
             try:
-                goodness = net.predict(batch_x, len(classes))
-                print(goodness)
+                batch_goodness = net.predict(batch_x, len(classes))
+                print(batch_goodness)
+                tn, fp, fn, tp = sklearn.metrics.confusion_matrix(batch_y, batch_goodness)
+                acc = np.sum((tp, tn)) / np.sum((tn, fp, fn, tp))
+                f1 = (2 * tp) / np.sum((2 * tp, fp, fn))
+                fpr = fp / np.sum((tn, fp))
+                acc_list.append(acc)
+                f1_list.append(f1)
+                fpr_list.append(fpr)
             except Exception as e:
                 print(e)
+        mean_acc = np.mean(acc_list)
+        mean_f1 = np.mean(f1)
+        mean_fpr = np.mean(fpr)
+        writer.add_scalar('Testing mean Accuracy', mean_acc, 1)
+        writer.add_scalar('Testing mean F1-Score', mean_f1, 1)
+        writer.add_scalar('Testing mean FPR', mean_fpr, 1)
 
 
 def train_loop2(opt, classes, writer, train_loader, test_loader, val_loader):
@@ -175,7 +274,7 @@ def train_loop2(opt, classes, writer, train_loader, test_loader, val_loader):
         model_type="progressive",
         n_layers=3,
         hidden_size=2000,
-        lr=0.03,
+        lr=0.0001,
         device=device,
         epochs=100,
         batch_size=opt.batchsize,
