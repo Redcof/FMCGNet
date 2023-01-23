@@ -37,9 +37,9 @@ class LeNet(nn.Module):
         super(LeNet, self).__init__()
         k1, f1, s1, p1, d1 = 5, 6, 1, 0, dilation
         k2, f2, s2, p2, d2 = 5, 16, 1, 0, dilation
-        k3, f3, s3, p3, d3 = 3, 32, 1, 0, dilation
-        k4, f4, s4, p4, d4 = 3, 64, 1, 0, dilation
-        k5, f5, s5, p5, d5 = 3, 128, 1, 0, dilation
+        k3, f3, s3, p3, d3 = 3, 32, 1, 0, 1
+        k4, f4, s4, p4, d4 = 3, 64, 1, 0, 1
+        k5, f5, s5, p5, d5 = 3, 128, 1, 0, 1
         ps = 2
         fc1o = 1024
         fc2o = 512
@@ -275,7 +275,6 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     elif opt.loss == 'FL':
         criterion_class_loss = FocalLoss(alpha=class_balance_weights, gamma=2.0)
     elif opt.loss == 'BCE':
-        print(type(torch.from_numpy(class_balance_weights)))
         criterion_class_loss = nn.CrossEntropyLoss(
             weight=class_balance_weights)
     else:
