@@ -6,6 +6,7 @@ import numpy as np
 import sklearn
 import torch
 from torch import nn, optim
+from tqdm import tqdm
 
 from model.dcn import DeformableConv2d
 
@@ -63,26 +64,26 @@ class LeNetFF(nn.Module):
             self.conv1, self.conv2, self.flatten, self.fc1, self.fc2, self.fc3
         ]
 
-    def predict(self, batch_x, n_classes):
+    def predict(self, x, num_classes):
         goodness_per_label = []
-        for label in range(n_classes):
-            y_label = [label] * len(batch_x)
-            batch_x = overlay_y_on_x_batch(batch_x, y_label, self.num_class)
-            # batch_x = self.flatten(batch_x)  # flatten(but batch wise)
+        for label in range(num_classes):
+            h = overlay_y_on_x(x, label, num_classes)
+            h = h.view(1, *h.shape)  # reshape to batch of 1 image
             goodness = []
             for layer in self.layers:
-                batch_x = layer(batch_x)
-                layer_goodness = layer.goodness(batch_x)
-                if layer_goodness is not None:
-                    goodness += [batch_x.pow(2).mean(1)]
-            goodness_per_label += [sum(goodness).unsqueeze(1)]
-        goodness_per_label = torch.cat(goodness_per_label, 1)
-        return goodness_per_label.argmax(1)
+                h = layer(h)
+                gdns = layer.goodness(h)  # as 'h' is a batch of 1 image, take first item
+                if gdns is not None:
+                    smile = gdns[0]
+                    goodness += [smile]
+            goodness_per_label += [sum(goodness).unsqueeze(0)]
+        goodness_per_label = torch.cat(goodness_per_label, 0)
+        return goodness_per_label.argmax(0), h
 
     def train(self, x_pos, x_neg):
         h_pos, h_neg = x_pos, x_neg
         for idx, layer in enumerate(self.layers):
-            print('Layer:[%02d/%02d]...' % (idx, LeNetFF.LAYER_NO), end="\b\r")
+            # print('Layer:[%02d/%02d]...' % (idx, LeNetFF.LAYER_NO), end="\b\r")
             h_pos, h_neg = layer.train(h_pos, h_neg)
 
 
@@ -164,7 +165,7 @@ class FFFCLayer(FFLayer):
         return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
 
 
-class FFFCOrigLayer(FFLayer):
+class FFClassificationLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
                  layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
                  criterion=None):
@@ -172,6 +173,36 @@ class FFFCOrigLayer(FFLayer):
                          activation=activation, criterion=criterion)
         self.fc = nn.Linear(in_features, out_features, dtype=dtype)
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
+
+    def forward(self, x):
+        x = self.activation(self.fc(x))
+        return x
+
+    def goodness(self, x):
+        return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
+
+
+class FFFCOrigLayer(FFLayer):
+    def __init__(self, in_features, out_features, dtype=None,
+                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
+                 criterion=None, classification_criterion=None):
+        super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
+                         activation=activation, criterion=criterion)
+        self.fc = nn.Linear(in_features, out_features, dtype=dtype)
+        self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
+        self.criterion = nn.CrossEntropyLoss() if classification_criterion is None else classification_criterion
+
+    def calculate_loss(self, f_pos, f_neg, y_label):
+        goodness_pos = self.goodness(f_pos)
+        goodness_neg = self.goodness(f_neg)
+        # The following loss pushes pos (neg) samples to
+        # values larger (smaller) than the self.threshold.
+        loss = torch.log(1 + torch.exp(torch.cat([
+            -goodness_pos + self.threshold,
+            goodness_neg - self.threshold]))).mean()
+        # additional classification loss
+        class_loss_value = self.criterion(f_pos, y_label)
+        return loss + class_loss_value
 
     def forward(self, x):
         x_direction = x / x.norm(2, 1, keepdim=True) + 1e-4
@@ -207,7 +238,58 @@ class FFConvLayer(FFLayer):
         return x
 
     def goodness(self, x):
-        return x.pow(2).mean(dim=(1, 2, 3))  # positive mean square as goodness
+        return x.pow(2).mean(dim=(-1, -2, -3))  # positive mean square as goodness
+
+
+def evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx):
+    with torch.no_grad():
+        print("\n\tTesting...")
+        acc_list = []
+        fpr_list = []
+        f1_list = []
+        pred_y = []
+        actual_y = []
+        for idx, ((batch_x, batch_y), meta) in enumerate(tqdm(test_loader)):
+            for x, y in zip(batch_x, batch_y):
+                one_goodness, y_pred = net.predict(x, len(classes))
+                pred_y.append(one_goodness.item())
+                actual_y.append(y.item())
+        actual_y, pred_y = np.array(actual_y), np.array(pred_y)
+        for class_idx in range(len(classes)):
+            one_vs_rest_actual_y = actual_y == class_idx
+            one_vs_rest_pred_y = pred_y == class_idx
+            # evaluate
+            confusion_mat = sklearn.metrics.confusion_matrix(one_vs_rest_actual_y, one_vs_rest_pred_y)
+            tp, fn, fp, tn = confusion_mat.flatten()
+            acc = np.sum((tp, tn)) / np.sum((tn, fp, fn, tp))
+            f1 = (2 * tp) / np.sum((2 * tp, fp, fn))
+            fpr = fp / np.sum((tn, fp))
+
+            acc_list.append(acc)
+            fpr_list.append(fpr)
+            f1_list.append(f1)
+
+            writer.add_scalar('Testing Accuracy[%s]' % classes[class_idx], acc, batch_idx)
+            writer.add_scalar('Testing F1-Score[%s]' % classes[class_idx], f1, batch_idx)
+            writer.add_scalar('Testing FPR[%s]' % classes[class_idx], fpr, batch_idx)
+
+        writer.add_scalar('Testing mean Accuracy', np.mean(acc_list), batch_idx)
+        writer.add_scalar('Testing mean F1-Score', np.mean(f1_list), batch_idx)
+        writer.add_scalar('Testing mean FPR', np.mean(fpr_list), batch_idx)
+
+        with open(str(op_dir / "model_summary.txt"), "a+") as fp:
+            acc_list.append(np.mean(acc_list))
+            f1_list.append(np.mean(f1_list))
+            fpr_list.append(np.mean(fpr_list))
+            s = 'Testing Accuracy: %s\n' % acc_list
+            fp.write(s)
+            print(s.strip())
+            s = 'Testing F1-Score: %s\n' % f1_list
+            fp.write(s)
+            print(s.strip())
+            s = 'Testing FPR: %s\n' % fpr_list
+            fp.write(s)
+            print(s.strip())
 
 
 def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
@@ -225,42 +307,18 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         print(s)
     print("============================================")
     net.to(opt.device)
-    for idx, ((batch_x, batch_y), meta) in enumerate(train_loader):
-        print("Batch: [%d/%d]" % (idx, num_batches))
+    print("\nTraining...")
+    for batch_idx, ((batch_x, batch_y), meta) in enumerate(tqdm(train_loader)):
+        # print("Batch: [%d/%d]" % (idx, num_batches))
         x_pos = overlay_y_on_x_batch(batch_x, batch_y, len(classes))
         rnd = torch.randperm(batch_x.size(0))
         x_neg = overlay_y_on_x_batch(batch_x, batch_y[rnd], len(classes))
         # x_pos = x_pos.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         # x_neg = x_neg.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         net.train(x_pos, x_neg)
-        break  # TODO dbg remove before testing
 
-    with torch.no_grad():
-        print("Testing..")
-        num_batches = len(test_loader)
-        acc_list = []
-        fpr_list = []
-        f1_list = []
-        for idx, ((batch_x, batch_y), meta) in enumerate(test_loader):
-            print("Batch: [%d/%d]" % (idx + 1, num_batches))
-            try:
-                batch_goodness = net.predict(batch_x, len(classes))
-                print(batch_goodness)
-                tn, fp, fn, tp = sklearn.metrics.confusion_matrix(batch_y, batch_goodness)
-                acc = np.sum((tp, tn)) / np.sum((tn, fp, fn, tp))
-                f1 = (2 * tp) / np.sum((2 * tp, fp, fn))
-                fpr = fp / np.sum((tn, fp))
-                acc_list.append(acc)
-                f1_list.append(f1)
-                fpr_list.append(fpr)
-            except Exception as e:
-                print(e)
-        mean_acc = np.mean(acc_list)
-        mean_f1 = np.mean(f1)
-        mean_fpr = np.mean(fpr)
-        writer.add_scalar('Testing mean Accuracy', mean_acc, 1)
-        writer.add_scalar('Testing mean F1-Score', mean_f1, 1)
-        writer.add_scalar('Testing mean FPR', mean_fpr, 1)
+        # unlike backprop, in FF we evaluate per-batch (not per-epoch)
+        evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx)
 
 
 def train_loop2(opt, classes, writer, train_loader, test_loader, val_loader):
