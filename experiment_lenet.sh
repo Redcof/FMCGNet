@@ -6,13 +6,14 @@ export DATA_ROOT="/Users/soumen/Downloads/Datasets/ActiveTerahertzImagingDataset
 export DATA_ROOT="/mnt/c/Users/dndlssardar/Downloads/THZ_dataset_det_VOC/JPEGImages"                             # wsl
 
 python model/train_lenet.py \
-  --name exp5_lenet_defrom_dil1_wavelet_focal_loss_lr_0001 \
-  --phase train --niter 20 \
+  --name exp9_modlenet_deform_dil2__wavelet_focal_loss_lr_009 \
+  \
+  --phase train --niter 50 \
   --dataroot $DATA_ROOT \
-  --lr 0.0001\
+  \
   --dataset atz \
-  --loss FL --atz_patch_db customdataset/atz/atz_patch_dataset__3_128_36_v2_10%_30_99%.csv \
+  --atz_patch_db customdataset/atz/atz_patch_dataset__3_128_36_v2_10%_30_99%.csv \
   --area_threshold 0.05 \
   --atz_classes "['KK', 'CK', 'CL', 'MD', 'SS', 'GA']" \
   --atz_wavelet "{'wavelet':'sym4', 'method':'VisuShrink','level':3, 'mode':'hard'}" \
-  --manualseed 47 --atz_wavelet_denoise --deformable --dilation 1
+  --manualseed 47 --atz_wavelet_denoise --dilation 2 --loss FL --lr 0.009 --deformable
