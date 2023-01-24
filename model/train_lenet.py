@@ -1,5 +1,7 @@
 import os
 import pathlib
+import shutil
+
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.metrics import roc_auc_score
 import cv2
@@ -32,7 +34,7 @@ if __name__ == '__main__':
 
     # default `log_dir` is "runs" - we'll be more specific here
     dir_ = pathlib.Path(opt.outf) / opt.name
-    os.makedirs(str(dir_), exist_ok=True)
+    os.makedirs(str(dir_), exist_ok=True)  # recreate
     writer = SummaryWriter(str(dir_))
 
     # Define the data loading and preprocessing

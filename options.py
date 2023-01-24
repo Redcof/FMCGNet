@@ -37,6 +37,8 @@ class Options:
                                  help='path to dataset')
         self.parser.add_argument('--batchsize', type=int, default=256, help='input batch size')
         self.parser.add_argument('--dilation', type=int, default=1, help='Dilation value for LeNet models')
+        self.parser.add_argument('--ffgoodness', type=float, default=2.0,
+                                 help='Layer goodness threshold for Forward-Forward algorithm')
         self.parser.add_argument('--deformable', action='store_true', default=False,
                                  help='Enable deformable convolution layers or not')
         self.parser.add_argument('--ff', action='store_true', default=False,

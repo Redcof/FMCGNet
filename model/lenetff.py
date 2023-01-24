@@ -1,14 +1,76 @@
 import os
 import pathlib
 from abc import abstractmethod
+from datetime import datetime
 
 import numpy as np
+import pandas as pd
 import sklearn
 import torch
 from torch import nn, optim
 from tqdm import tqdm
 
 from model.dcn import DeformableConv2d
+
+"""
+How to create a FF layer?
+
+Any FF layer class must contain the following:
+
+Properties:
+    batch_idx
+    loss
+    goodness_val
+
+Methods:
+        def goodness(self, x):...
+        def train(x_pos, x_neg):...
+        def calculate_loss(self, f_pos, f_neg,):...
+Sample:
+class FFCustomLayer:
+    def __int__(self, *args, **kwargs):
+        self.loss = None
+        self.goodness_val = None
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
+        self.batch_idx = 0
+
+        def goodness(self, x):
+            return None
+
+        def train(self, x_pos, x_neg):
+            return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+        
+        def calculate_loss(self, f_pos, f_neg):
+            goodness_pos = self.goodness(f_pos)
+            goodness_neg = self.goodness(f_neg)
+            # The following loss pushes pos (neg) samples to
+            # values larger (smaller) than the self.threshold.
+            loss = torch.log(1 + torch.exp(torch.cat([
+                -goodness_pos + self.threshold,
+                goodness_neg - self.threshold]))).mean()
+            self.loss = loss.items()
+            self.goodness_val = goodness_pos.mean().item()
+            return loss
+"""
+
+
+def hybrid_negative_image(nc, imsize, img_pos1, img_pos2):
+    """
+    From original paper: "The Forward-Forward Algorithm: Some Preliminary Investigations"
+    To force FF to focus on the longer range correlations in images that characterize shapes, we need
+to create negative data that has very different long range correlations but very similar short range
+correlations. This can be done by creating a mask containing fairly large regions of ones and zeros.
+We then create hybrid images for the negative data by adding together one digit image times the mask
+and a different digit image times the reverse of the mask as shown in figure 1. Masks like this can be
+created by starting with a random bit image and then repeatedly blurring the image with a filter of the
+form [1/4, 1/2, 1/4] in both the horizontal and vertical directions. After repeated blurring, the image
+is then threshold at 0.5.
+    Returns: negative hybrid image
+    """
+
+    t_rand = torch.rand((nc, imsize, imsize))
+    t_mask = torch.tensor(0.0) + ((t_rand - t_rand.min()) * torch.tensor(255.0)) / (t_rand.max() - t_rand.min())
 
 
 def overlay_y_on_x_batch(x_batch, y_batch, n_classes):
@@ -34,7 +96,8 @@ def overlay_y_on_x(x, y, n_classes, inplace=False):
 class LeNetFF(nn.Module):
     LAYER_NO = 0
 
-    def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None):
+    def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None,
+                 goodness=2.0):
         super().__init__()
         self.num_class = num_classes
         self.layers = []
@@ -45,9 +108,12 @@ class LeNetFF(nn.Module):
         fc2o = 84
 
         self.conv1 = FFConvLayer(in_channels=channels, out_channels=f1, kernel_size=k1, stride=s1, padding=p1,
+                                 epoch=epoch,
+                                 goodness_threshold=goodness,
                                  dilation=d1, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr,
                                  writer=writer)
-        self.conv2 = FFConvLayer(in_channels=f1, out_channels=f2, kernel_size=k2, stride=s2, padding=p2,
+        self.conv2 = FFConvLayer(in_channels=f1, out_channels=f2, kernel_size=k2, stride=s2, padding=p2, epoch=epoch,
+                                 goodness_threshold=goodness,
                                  dilation=d2, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr,
                                  writer=writer)
 
@@ -57,10 +123,10 @@ class LeNetFF(nn.Module):
         fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
 
         self.flatten = FFFlatten()
-        self.fc1 = FFFCLayer(fc_fx_size, fc1o, lr=lr, writer=writer)
+        self.fc1 = FFFCLayer(fc_fx_size, fc1o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
         laynorm = FFLayerNorm(1, eps=1e-5, elementwise_affine=False)
-        self.fc2 = FFFCLayer(fc1o, fc2o, lr=lr, writer=writer)
-        self.fc3 = FFFCLayer(fc2o, num_classes, lr=lr, writer=writer)
+        self.fc2 = FFFCLayer(fc1o, fc2o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
+        self.fc3 = FFFCLayer(fc2o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
         # self.softmax = nn.Softmax(dim=num_classes)
         self.layers = [
             self.conv1, self.conv2, self.flatten, self.fc1, self.fc2, self.fc3
@@ -85,9 +151,13 @@ class LeNetFF(nn.Module):
     def train(self, x_pos, x_neg, batch_idx):
         h_pos, h_neg = x_pos, x_neg
         for idx, layer in enumerate(self.layers):
-            # print('Layer:[%02d/%02d]...' % (idx, LeNetFF.LAYER_NO), end="\b\r")
+            print('\tTraining Layer:[%d/%d]...' % (idx, LeNetFF.LAYER_NO))
             layer.batch_idx = batch_idx
             h_pos, h_neg = layer.train(h_pos, h_neg)
+            try:
+                print("\tLayer-", layer.layer_no, "Loss:", layer.loss, "Goodness:", layer.goodness_val)
+            except:
+                ...
 
 
 class FFLayer(nn.Module):
@@ -102,6 +172,8 @@ class FFLayer(nn.Module):
         self.batch_idx = 0
         self.activation = torch.nn.ReLU() if activation is None else activation
         self.criterion = self.calculate_loss if criterion is None else criterion
+        self.loss = float("-inf")
+        self.goodness_val = 0.0
 
     @abstractmethod
     def goodness(self, x):
@@ -119,10 +191,12 @@ class FFLayer(nn.Module):
             self.writer.add_scalars('Goodness', {"Layer-%d" % self.layer_no: goodness_pos.mean()},
                                     self.batch_idx + 1)
             self.writer.add_scalars('Loss', {"Layer-%d" % self.layer_no: loss}, self.batch_idx + 1)
+        self.loss = loss.item()
+        self.goodness_val = goodness_pos.mean().item()
         return loss
 
     def train(self, x_pos, x_neg):
-        for epoch_idx in range(self.num_epochs):
+        for epoch_idx in tqdm(range(self.num_epochs)):
             f_pos = self.forward(x_pos)
             f_neg = self.forward(x_neg)
             # calculate loss
@@ -137,7 +211,7 @@ class FFLayer(nn.Module):
 
 class FFFCLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
-                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
+                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=2, optimizer=None, lr=0.0001,
                  criterion=None, writer=None):
         super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
                          activation=activation, criterion=criterion, writer=writer)
@@ -231,7 +305,11 @@ class FFConvLayer(FFLayer):
 class FFFlatten(nn.Flatten):
     def __int__(self, *args, **kwargs):
         super(FFFlatten, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
         self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
 
     def goodness(self, x):
         return None
@@ -243,7 +321,13 @@ class FFFlatten(nn.Flatten):
 class FFLayerNorm(nn.LayerNorm):
     def __int__(self, *args, **kwargs):
         super(FFLayerNorm, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
         self.batch_idx = 0
+        self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
+        self.layer_no = None
 
     def goodness(self, x):
         return None
@@ -257,9 +341,14 @@ def evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx):
         print("\n\tTesting...")
         acc_list = []
         fpr_list = []
+        tpr_list = []
         f1_list = []
         pred_y = []
         actual_y = []
+        tps = []
+        tns = []
+        fps = []
+        fns = []
         for idx, ((batch_x, batch_y), meta) in enumerate(tqdm(test_loader)):
             for x, y in zip(batch_x, batch_y):
                 one_goodness, y_pred = net.predict(x, len(classes))
@@ -275,39 +364,83 @@ def evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx):
             acc = np.sum((tp, tn)) / np.sum((tn, fp, fn, tp))
             f1 = (2 * tp) / np.sum((2 * tp, fp, fn))
             fpr = fp / np.sum((tn, fp))
+            tpr = tp / np.sum((tp, fn))
 
             acc_list.append(acc)
             fpr_list.append(fpr)
             f1_list.append(f1)
+            tpr_list.append(tpr)
+
+            tps.append(tp)
+            tns.append(tn)
+            fps.append(fp)
+            fns.append(fn)
 
             writer.add_scalars('Accuracy', {classes[class_idx]: acc}, batch_idx + 1)
             writer.add_scalars('F1-Score', {classes[class_idx]: f1}, batch_idx + 1)
             writer.add_scalars('FPR', {classes[class_idx]: fpr}, batch_idx + 1)
+            writer.add_scalars('TPR', {classes[class_idx]: tpr}, batch_idx + 1)
 
-        writer.add_scalar('µAccuracy', np.mean(acc_list), batch_idx + 1)
-        writer.add_scalar('µF1-Score', np.mean(f1_list), batch_idx + 1)
-        writer.add_scalar('µFPR', np.mean(fpr_list), batch_idx + 1)
+        writer.add_scalars('Evaluation', {
+            "µAccuracy": np.mean(acc_list),
+            'µF1-Score': np.mean(f1_list),
+            'µFPR': np.mean(fpr_list),
+            'µTPR': np.mean(tpr_list)
+        }, batch_idx + 1)
+        print({
+            "µAccuracy": np.mean(acc_list),
+            'µF1-Score': np.mean(f1_list),
+            'µFPR': np.mean(fpr_list),
+            'µTPR': np.mean(tpr_list)
+        })
 
+        acc_list.append(np.mean(acc_list))
+        f1_list.append(np.mean(f1_list))
+        fpr_list.append(np.mean(fpr_list))
+        tps.append(0)
+        tns.append(0)
+        fps.append(0)
+        fns.append(0)
+        try:
+            pd.DataFrame(dict(
+                Accuracy=acc_list,
+                F1=f1_list,
+                FPR=fpr_list,
+                TPR=tpr_list,
+                TP=tps,
+                FP=fps,
+                TN=tns,
+                FN=fns,
+            )).to_csv(str(op_dir / "eval.csv"))
+        except:
+            ...
         with open(str(op_dir / "model_summary.txt"), "a+") as fp:
-            acc_list.append(np.mean(acc_list))
-            f1_list.append(np.mean(f1_list))
-            fpr_list.append(np.mean(fpr_list))
             s = 'Accuracy: %s\n' % acc_list
             fp.write(s)
-            print(s.strip())
             s = 'F1-Score: %s\n' % f1_list
             fp.write(s)
-            print(s.strip())
             s = 'FPR: %s\n' % fpr_list
             fp.write(s)
-            print(s.strip())
+            s = 'TPR: %s\n' % tpr_list
+            fp.write(s)
+            s = 'TP: %s\n' % tps
+            fp.write(s)
+            s = 'TN: %s\n' % tns
+            fp.write(s)
+            s = 'FP: %s\n' % fps
+            fp.write(s)
+            s = 'FN: %s\n' % fns
+            fp.write(s)
 
 
 def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
+    now = datetime.now()
+    dt_string_start = now.strftime("%d/%m/%Y %H:%M:%S\n")
     num_batches = len(train_loader)
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
     net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter, channels=3,
-                  deformable=opt.deformable, writer=writer)
+                  goodness=opt.ffgoodness,
+                  lr=opt.lr, deformable=opt.deformable, writer=writer)
     print("================Model Summary===============")
     op_dir = pathlib.Path(opt.outf) / opt.name
     os.makedirs(str(op_dir), exist_ok=True)
@@ -330,22 +463,10 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
 
         # unlike backprop, in FF we evaluate per-batch (not per-epoch)
         evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx)
-
-
-def train_loop2(opt, classes, writer, train_loader, test_loader, val_loader):
-    from forward_forward import train_with_forward_forward_algorithm
-    import os
-    import torch
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    trained_model = train_with_forward_forward_algorithm(
-        model_type="progressive",
-        n_layers=3,
-        hidden_size=2000,
-        lr=0.0001,
-        device=device,
-        epochs=100,
-        batch_size=opt.batchsize,
-        theta=2.,
-    )
+    with open(str(op_dir / "model_summary.txt"), "a+") as fp:
+        now = datetime.now()
+        dt_string_end = now.strftime("%d/%m/%Y %H:%M:%S\n")
+        fp.write(dt_string_start)
+        fp.write(dt_string_end)
+        print(dt_string_start.strip())
+        print(dt_string_end.strip())
