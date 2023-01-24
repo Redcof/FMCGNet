@@ -34,7 +34,7 @@ def overlay_y_on_x(x, y, n_classes, inplace=False):
 class LeNetFF(nn.Module):
     LAYER_NO = 0
 
-    def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001):
+    def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None):
         super().__init__()
         self.num_class = num_classes
         self.layers = []
@@ -45,9 +45,11 @@ class LeNetFF(nn.Module):
         fc2o = 84
 
         self.conv1 = FFConvLayer(in_channels=channels, out_channels=f1, kernel_size=k1, stride=s1, padding=p1,
-                                 dilation=d1, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr)
+                                 dilation=d1, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr,
+                                 writer=writer)
         self.conv2 = FFConvLayer(in_channels=f1, out_channels=f2, kernel_size=k2, stride=s2, padding=p2,
-                                 dilation=d2, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr)
+                                 dilation=d2, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr,
+                                 writer=writer)
 
         x = sample_batch
         x = self.conv1(x)
@@ -55,10 +57,10 @@ class LeNetFF(nn.Module):
         fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
 
         self.flatten = FFFlatten()
-        self.fc1 = FFFCLayer(fc_fx_size, fc1o, lr=lr)
+        self.fc1 = FFFCLayer(fc_fx_size, fc1o, lr=lr, writer=writer)
         laynorm = FFLayerNorm(1, eps=1e-5, elementwise_affine=False)
-        self.fc2 = FFFCLayer(fc1o, fc2o, lr=lr)
-        self.fc3 = FFFCLayer(fc2o, num_classes, lr=lr)
+        self.fc2 = FFFCLayer(fc1o, fc2o, lr=lr, writer=writer)
+        self.fc3 = FFFCLayer(fc2o, num_classes, lr=lr, writer=writer)
         # self.softmax = nn.Softmax(dim=num_classes)
         self.layers = [
             self.conv1, self.conv2, self.flatten, self.fc1, self.fc2, self.fc3
@@ -80,21 +82,24 @@ class LeNetFF(nn.Module):
         goodness_per_label = torch.cat(goodness_per_label, 0)
         return goodness_per_label.argmax(0), h
 
-    def train(self, x_pos, x_neg):
+    def train(self, x_pos, x_neg, batch_idx):
         h_pos, h_neg = x_pos, x_neg
         for idx, layer in enumerate(self.layers):
             # print('Layer:[%02d/%02d]...' % (idx, LeNetFF.LAYER_NO), end="\b\r")
+            layer.batch_idx = batch_idx
             h_pos, h_neg = layer.train(h_pos, h_neg)
 
 
 class FFLayer(nn.Module):
-    def __init__(self, goodness_threshold=2.0, layer_norm=True, epoch=10, activation=None, criterion=None):
+    def __init__(self, goodness_threshold=2.0, layer_norm=True, epoch=10, activation=None, criterion=None, writer=None):
         super().__init__()
         LeNetFF.LAYER_NO += 1
         self.layer_no = LeNetFF.LAYER_NO
         self.threshold = goodness_threshold
         self.num_epochs = epoch
         self.layer_norm = layer_norm
+        self.writer = writer
+        self.batch_idx = 0
         self.activation = torch.nn.ReLU() if activation is None else activation
         self.criterion = self.calculate_loss if criterion is None else criterion
 
@@ -110,6 +115,10 @@ class FFLayer(nn.Module):
         loss = torch.log(1 + torch.exp(torch.cat([
             -goodness_pos + self.threshold,
             goodness_neg - self.threshold]))).mean()
+        if self.writer:
+            self.writer.add_scalars('Goodness', {"Layer-%d" % self.layer_no: goodness_pos.mean()},
+                                    self.batch_idx + 1)
+            self.writer.add_scalars('Loss', {"Layer-%d" % self.layer_no: loss}, self.batch_idx + 1)
         return loss
 
     def train(self, x_pos, x_neg):
@@ -126,34 +135,12 @@ class FFLayer(nn.Module):
         return self.forward(x_pos).detach(), self.forward(x_neg).detach()
 
 
-class FFFlatten(nn.Flatten):
-    def __int__(self, *args, **kwargs):
-        super(FFFlatten, self).__int__(*args, **kwargs)
-
-    def goodness(self, x):
-        return None
-
-    def train(self, x_pos, x_neg):
-        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
-
-
-class FFLayerNorm(nn.LayerNorm):
-    def __int__(self, *args, **kwargs):
-        super(FFLayerNorm, self).__int__(*args, **kwargs)
-
-    def goodness(self, x):
-        return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
-
-    def train(self, x_pos, x_neg):
-        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
-
-
 class FFFCLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
                  layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
-                 criterion=None):
+                 criterion=None, writer=None):
         super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
-                         activation=activation, criterion=criterion)
+                         activation=activation, criterion=criterion, writer=writer)
         self.fc = nn.Linear(in_features, out_features, dtype=dtype)
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
 
@@ -168,11 +155,12 @@ class FFFCLayer(FFLayer):
 class FFClassificationLayer(FFLayer):
     def __init__(self, in_features, out_features, dtype=None,
                  layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
-                 criterion=None):
+                 criterion=None, writer=None, classification_criterion=None):
         super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
-                         activation=activation, criterion=criterion)
+                         activation=activation, criterion=criterion, writer=writer)
         self.fc = nn.Linear(in_features, out_features, dtype=dtype)
         self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
+        self.criterion = nn.CrossEntropyLoss() if classification_criterion is None else classification_criterion
 
     def forward(self, x):
         x = self.activation(self.fc(x))
@@ -180,17 +168,6 @@ class FFClassificationLayer(FFLayer):
 
     def goodness(self, x):
         return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
-
-
-class FFFCOrigLayer(FFLayer):
-    def __init__(self, in_features, out_features, dtype=None,
-                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
-                 criterion=None, classification_criterion=None):
-        super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
-                         activation=activation, criterion=criterion)
-        self.fc = nn.Linear(in_features, out_features, dtype=dtype)
-        self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
-        self.criterion = nn.CrossEntropyLoss() if classification_criterion is None else classification_criterion
 
     def calculate_loss(self, f_pos, f_neg, y_label):
         goodness_pos = self.goodness(f_pos)
@@ -203,6 +180,16 @@ class FFFCOrigLayer(FFLayer):
         # additional classification loss
         class_loss_value = self.criterion(f_pos, y_label)
         return loss + class_loss_value
+
+
+class FFFCOrigLayer(FFLayer):
+    def __init__(self, in_features, out_features, dtype=None,
+                 layer_norm=True, activation=None, goodness_threshold=2.0, epoch=10, optimizer=None, lr=0.0001,
+                 criterion=None, writer=None):
+        super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
+                         activation=activation, criterion=criterion, writer=writer)
+        self.fc = nn.Linear(in_features, out_features, dtype=dtype)
+        self.optimizer = optim.Adam(self.fc.parameters(), lr=lr) if optimizer is None else optimizer
 
     def forward(self, x):
         x_direction = x / x.norm(2, 1, keepdim=True) + 1e-4
@@ -217,9 +204,9 @@ class FFConvLayer(FFLayer):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, deformable=False,
                  pool_kernel=None, pool_stride=None,
                  activation=None, goodness_threshold=2.0, layer_norm=False, epoch=10, optimizer=None, lr=0.0001,
-                 criterion=None):
+                 criterion=None, writer=None):
         super().__init__(goodness_threshold=goodness_threshold, layer_norm=layer_norm, epoch=epoch,
-                         activation=activation, criterion=criterion)
+                         activation=activation, criterion=criterion, writer=writer)
         # selection of convolution
         conv = DeformableConv2d if deformable else nn.Conv2d
         self.conv = conv(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size,
@@ -239,6 +226,30 @@ class FFConvLayer(FFLayer):
 
     def goodness(self, x):
         return x.pow(2).mean(dim=(-1, -2, -3))  # positive mean square as goodness
+
+
+class FFFlatten(nn.Flatten):
+    def __int__(self, *args, **kwargs):
+        super(FFFlatten, self).__int__(*args, **kwargs)
+        self.batch_idx = 0
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFLayerNorm(nn.LayerNorm):
+    def __int__(self, *args, **kwargs):
+        super(FFLayerNorm, self).__int__(*args, **kwargs)
+        self.batch_idx = 0
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
 
 
 def evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx):
@@ -269,25 +280,25 @@ def evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx):
             fpr_list.append(fpr)
             f1_list.append(f1)
 
-            writer.add_scalar('Testing Accuracy[%s]' % classes[class_idx], acc, batch_idx)
-            writer.add_scalar('Testing F1-Score[%s]' % classes[class_idx], f1, batch_idx)
-            writer.add_scalar('Testing FPR[%s]' % classes[class_idx], fpr, batch_idx)
+            writer.add_scalars('Accuracy', {classes[class_idx]: acc}, batch_idx + 1)
+            writer.add_scalars('F1-Score', {classes[class_idx]: f1}, batch_idx + 1)
+            writer.add_scalars('FPR', {classes[class_idx]: fpr}, batch_idx + 1)
 
-        writer.add_scalar('Testing mean Accuracy', np.mean(acc_list), batch_idx)
-        writer.add_scalar('Testing mean F1-Score', np.mean(f1_list), batch_idx)
-        writer.add_scalar('Testing mean FPR', np.mean(fpr_list), batch_idx)
+        writer.add_scalar('µAccuracy', np.mean(acc_list), batch_idx + 1)
+        writer.add_scalar('µF1-Score', np.mean(f1_list), batch_idx + 1)
+        writer.add_scalar('µFPR', np.mean(fpr_list), batch_idx + 1)
 
         with open(str(op_dir / "model_summary.txt"), "a+") as fp:
             acc_list.append(np.mean(acc_list))
             f1_list.append(np.mean(f1_list))
             fpr_list.append(np.mean(fpr_list))
-            s = 'Testing Accuracy: %s\n' % acc_list
+            s = 'Accuracy: %s\n' % acc_list
             fp.write(s)
             print(s.strip())
-            s = 'Testing F1-Score: %s\n' % f1_list
+            s = 'F1-Score: %s\n' % f1_list
             fp.write(s)
             print(s.strip())
-            s = 'Testing FPR: %s\n' % fpr_list
+            s = 'FPR: %s\n' % fpr_list
             fp.write(s)
             print(s.strip())
 
@@ -296,7 +307,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     num_batches = len(train_loader)
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
     net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter, channels=3,
-                  deformable=opt.deformable)
+                  deformable=opt.deformable, writer=writer)
     print("================Model Summary===============")
     op_dir = pathlib.Path(opt.outf) / opt.name
     os.makedirs(str(op_dir), exist_ok=True)
@@ -308,14 +319,14 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     print("============================================")
     net.to(opt.device)
     print("\nTraining...")
-    for batch_idx, ((batch_x, batch_y), meta) in enumerate(tqdm(train_loader)):
-        # print("Batch: [%d/%d]" % (idx, num_batches))
+    for batch_idx, ((batch_x, batch_y), meta) in enumerate(train_loader):
+        print("Training Batch: [%d/%d]" % (batch_idx, num_batches))
         x_pos = overlay_y_on_x_batch(batch_x, batch_y, len(classes))
         rnd = torch.randperm(batch_x.size(0))
         x_neg = overlay_y_on_x_batch(batch_x, batch_y[rnd], len(classes))
         # x_pos = x_pos.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         # x_neg = x_neg.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
-        net.train(x_pos, x_neg)
+        net.train(x_pos, x_neg, batch_idx)
 
         # unlike backprop, in FF we evaluate per-batch (not per-epoch)
         evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx)
