@@ -43,6 +43,8 @@ class Options:
                                  help='Enable deformable convolution layers or not')
         self.parser.add_argument('--ff', action='store_true', default=False,
                                  help='Enable forward-forward algorithm or not')
+        self.parser.add_argument('--ffnegalg', default='overlay', choices=['overlay', 'hybrid'],
+                                 help='Which algorithm to use to generate negative data as discussed in original paper.')
         self.parser.add_argument('--loss', type=str, default='CE', choices=['CE', 'SFL', 'BCE', 'FL'],
                                  help='CEL:Categorical Cross-Entropy Loss, SFL: Sigmoid focal loss,'
                                       ' BCEL: Balanced Cross-entropy loss')

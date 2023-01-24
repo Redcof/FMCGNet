@@ -3,14 +3,18 @@ import pathlib
 from abc import abstractmethod
 from datetime import datetime
 
+import cv2
 import numpy as np
 import pandas as pd
 import sklearn
 import torch
+from empatches import EMPatches
 from torch import nn, optim
+from torchvision.transforms import transforms
 from tqdm import tqdm
 
 from model.dcn import DeformableConv2d
+from options import Options
 
 """
 How to create a FF layer?
@@ -55,7 +59,22 @@ class FFCustomLayer:
 """
 
 
-def hybrid_negative_image(nc, imsize, img_pos1, img_pos2):
+def get_batch_of_hybrid_image(x_batch, y_batch, opt, classes):
+    hybrid_b = torch.rand_like(x_batch)
+    for batch_idx, cls_idx in enumerate(y_batch):
+        if batch_idx > 4:
+            # assuming every last to 3rd item form now is from different class
+            ineg = x_batch[batch_idx - 3].numpy().reshape((opt.isize, opt.isize, opt.nc)).copy()
+        else:
+            # assuming every next to 3rd item form now is from different class
+            ineg = x_batch[batch_idx + 3].numpy().reshape((opt.isize, opt.isize, opt.nc)).copy()
+        ipos = x_batch[batch_idx].numpy().reshape((opt.isize, opt.isize, opt.nc)).copy()
+        npimage = hybrid_negative_image(opt, classes[cls_idx], ipos=ipos, ineg=ineg)
+        hybrid_b[batch_idx, :, :, :] = torch.from_numpy(npimage)
+    return transforms.Normalize((0.5,), (0.5,))(hybrid_b)
+
+
+def hybrid_negative_image(opt, class_lbl, ipos=None, ineg=None):
     """
     From original paper: "The Forward-Forward Algorithm: Some Preliminary Investigations"
     To force FF to focus on the longer range correlations in images that characterize shapes, we need
@@ -66,11 +85,92 @@ and a different digit image times the reverse of the mask as shown in figure 1. 
 created by starting with a random bit image and then repeatedly blurring the image with a filter of the
 form [1/4, 1/2, 1/4] in both the horizontal and vertical directions. After repeated blurring, the image
 is then threshold at 0.5.
+
+    1. get two images(ipos, ineg) one for given class and another form any ransom class
+    2. create random bit image (ir)
+    3. apply motion blur(vertical and horizontal) 3 times (ibl)
+    4. apply threshold(0.5) (imsk, irmsk)
+    4. hybrid = ipos*imsk + ineg*irmsk
+
+
     Returns: negative hybrid image
     """
 
-    t_rand = torch.rand((nc, imsize, imsize))
-    t_mask = torch.tensor(0.0) + ((t_rand - t_rand.min()) * torch.tensor(255.0)) / (t_rand.max() - t_rand.min())
+    def bluring(img, kernel_size):
+        # Specify the kernel size.
+        # The greater the size, the more the motion.
+
+        # Create the vertical kernel.
+        kernel_v = np.zeros((kernel_size, kernel_size))
+
+        # Create a copy of the same for creating the horizontal kernel.
+        kernel_h = np.copy(kernel_v)
+
+        # Fill the middle row with ones.
+        kernel_v[:, int((kernel_size - 1) / 2)] = np.ones(kernel_size)
+        kernel_h[int((kernel_size - 1) / 2), :] = np.ones(kernel_size)
+
+        # Normalize.
+        kernel_v /= kernel_size
+        kernel_h /= kernel_size
+
+        # Apply the vertical kernel.
+        img = cv2.filter2D(img, -1, kernel_v)
+
+        # Apply the horizontal kernel.
+        img = cv2.filter2D(img, -1, kernel_h)
+        return img
+
+    def get_patch(sample, opt):
+        img_path = sample['image'].values[0]
+        patch_id = sample['patch_id'].values[0]
+        img_path = os.path.join(opt.dataroot, img_path)
+        patch_size = opt.isize
+        patch_overlap = opt.atz_patch_overlap
+        image = cv2.imread(img_path)
+        # create patches
+        emp = EMPatches()
+        img_patches, indices = emp.extract_patches(image, patchsize=patch_size, overlap=patch_overlap)
+        img = img_patches[patch_id]
+        return img
+
+    if ipos is None or ineg is None:
+        patch_dataset_csv = opt.atz_patch_db
+        df = pd.read_csv(patch_dataset_csv)
+        if ipos is None:
+            sample1 = df[(df['label_txt'] == class_lbl) & (df['anomaly_size'] >= opt.isize ** 2 / 2)].sample(1)
+            ipos = get_patch(sample1, opt)
+
+        if ineg is None:
+            sample2 = df[(df['label_txt'] != class_lbl) & (df['anomaly_size'] >= 0.0)].sample(1)
+            ineg = get_patch(sample2, opt)
+
+    ipos = cv2.cvtColor(ipos, cv2.COLOR_BGR2GRAY)
+    ineg = cv2.cvtColor(ineg, cv2.COLOR_BGR2GRAY)
+
+    ipos = cv2.normalize(ipos, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+    ineg = cv2.normalize(ineg, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+    ir = np.random.rand(*ipos.shape)
+    ir = cv2.normalize(ir, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+
+    ibl = bluring(bluring(bluring(ir, 2), 4), 2)
+
+    _, imsk = cv2.threshold(ibl, 255 // 2, 255, cv2.THRESH_BINARY)
+    _, irmsk = cv2.threshold(ibl, 255 // 2, 255, cv2.THRESH_BINARY_INV)
+
+    hybrid = (ipos * imsk) + (ineg * irmsk)
+
+    # images = [ipos, ineg, ir, ibl, imsk, irmsk, hybrid]
+    # cols = len(images)
+    # for idx, img in enumerate(images):
+    #     plt.subplot(1, cols, idx + 1)
+    #     plt.imshow(img, cmap="Greys")
+    #
+    # plt.show()
+    # input()
+    hybrid = np.concatenate((hybrid, hybrid, hybrid)).reshape((3, *hybrid.shape))
+    return hybrid
 
 
 def overlay_y_on_x_batch(x_batch, y_batch, n_classes):
@@ -97,10 +197,11 @@ class LeNetFF(nn.Module):
     LAYER_NO = 0
 
     def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None,
-                 goodness=2.0):
+                 goodness=2.0, negative_image_algo="overlay"):
         super().__init__()
         self.num_class = num_classes
         self.layers = []
+        self.negative_image_algo = negative_image_algo
         k1, f1, s1, p1, d1 = 5, 6, 1, 0, 2
         k2, f2, s2, p2, d2 = 5, 16, 1, 0, 2
         ps = 2
@@ -135,7 +236,10 @@ class LeNetFF(nn.Module):
     def predict(self, x, num_classes):
         goodness_per_label = []
         for label in range(num_classes):
-            h = overlay_y_on_x(x, label, num_classes)
+            if self.negative_image_algo == "overlay":
+                h = overlay_y_on_x(x, label, num_classes)
+            elif self.negative_image_algo == "hybrid":
+                h = x  # do nothing
             h = h.view(1, *h.shape)  # reshape to batch of 1 image
             goodness = []
             for layer in self.layers:
@@ -439,7 +543,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     num_batches = len(train_loader)
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
     net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter, channels=3,
-                  goodness=opt.ffgoodness,
+                  goodness=opt.ffgoodness, negative_image_algo=opt.ffnegalg,
                   lr=opt.lr, deformable=opt.deformable, writer=writer)
     print("================Model Summary===============")
     op_dir = pathlib.Path(opt.outf) / opt.name
@@ -454,9 +558,13 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     print("\nTraining...")
     for batch_idx, ((batch_x, batch_y), meta) in enumerate(train_loader):
         print("Training Batch: [%d/%d]" % (batch_idx, num_batches))
-        x_pos = overlay_y_on_x_batch(batch_x, batch_y, len(classes))
-        rnd = torch.randperm(batch_x.size(0))
-        x_neg = overlay_y_on_x_batch(batch_x, batch_y[rnd], len(classes))
+        if opt.ffnegalg == "overlay":
+            x_pos = overlay_y_on_x_batch(batch_x, batch_y, len(classes))
+            rnd = torch.randperm(batch_x.size(0))
+            x_neg = overlay_y_on_x_batch(batch_x, batch_y[rnd], len(classes))
+        elif opt.ffnegalg == "hybrid":
+            x_pos = batch_x
+            x_neg = get_batch_of_hybrid_image(batch_x, batch_y, opt, classes)
         # x_pos = x_pos.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         # x_neg = x_neg.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         net.train(x_pos, x_neg, batch_idx)
@@ -470,3 +578,8 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         fp.write(dt_string_end)
         print(dt_string_start.strip())
         print(dt_string_end.strip())
+
+
+if __name__ == '__main__':
+    opt = Options().parse()
+    hybrid_negative_image(opt, "MD")
