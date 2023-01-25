@@ -60,18 +60,19 @@ class FFCustomLayer:
 
 
 def get_batch_of_hybrid_image(x_batch, y_batch, opt, classes):
-    hybrid_b = torch.rand_like(x_batch)
+    hybrid_b = torch.rand_like(x_batch).cpu()
     for batch_idx, cls_idx in enumerate(y_batch):
         if batch_idx > 4:
             # assuming every last to 3rd item form now is from different class
-            ineg = x_batch[batch_idx - 3].numpy().reshape((opt.isize, opt.isize, opt.nc)).copy()
+            ineg = x_batch[batch_idx - 3]
         else:
             # assuming every next to 3rd item form now is from different class
-            ineg = x_batch[batch_idx + 3].numpy().reshape((opt.isize, opt.isize, opt.nc)).copy()
-        ipos = x_batch[batch_idx].numpy().reshape((opt.isize, opt.isize, opt.nc)).copy()
+            ineg = x_batch[batch_idx + 3]
+        ineg = ineg.clone().detach().cpu().numpy().reshape((opt.isize, opt.isize, opt.nc))
+        ipos = x_batch[batch_idx].clone().detach().cpu().numpy().reshape((opt.isize, opt.isize, opt.nc))
         npimage = hybrid_negative_image(opt, classes[cls_idx], ipos=ipos, ineg=ineg)
         hybrid_b[batch_idx, :, :, :] = torch.from_numpy(npimage)
-    return transforms.Normalize((0.5,), (0.5,))(hybrid_b)
+    return transforms.Normalize((0.5,), (0.5,))(hybrid_b).to(opt.device)
 
 
 def hybrid_negative_image(opt, class_lbl, ipos=None, ineg=None):
