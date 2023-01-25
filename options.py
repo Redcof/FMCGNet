@@ -41,6 +41,12 @@ class Options:
                                  help='Layer goodness threshold for Forward-Forward algorithm')
         self.parser.add_argument('--deformable', action='store_true', default=False,
                                  help='Enable deformable convolution layers or not')
+        self.parser.add_argument('--batchnorm', action='store_true', default=False,
+                                 help='Whether to use batch normalization or not')
+        self.parser.add_argument('--layernorm', action='store_true', default=False,
+                                 help='Whether to use layer normalization or not')
+        self.parser.add_argument('--dropout', action='store_true', default=False,
+                                 help='Whether to use layer normalization or not')
         self.parser.add_argument('--ff', action='store_true', default=False,
                                  help='Enable forward-forward algorithm or not')
         self.parser.add_argument('--ffnegalg', default='overlay', choices=['overlay', 'hybrid'],

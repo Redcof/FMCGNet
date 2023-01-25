@@ -157,6 +157,7 @@ is then threshold at 0.5.
     ipos = cv2.normalize(ipos, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     ineg = cv2.normalize(ineg, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
+    np.random.seed(opt.manualseed)
     ir = np.random.rand(*ipos.shape)
     ir = cv2.normalize(ir, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     ibl = bluring(bluring(bluring(ir, 40), 40), 40)
@@ -199,11 +200,16 @@ def overlay_y_on_x(x, y, n_classes, inplace=False):
     return x
 
 
+# ################################################################################
+# ################################################################################
+# ################################################################################
+# ################################################################################
+# ################################################################################
 class LeNetFF(nn.Module):
     LAYER_NO = 0
 
     def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None,
-                 goodness=2.0, negative_image_algo="overlay"):
+                 goodness=2.0, negative_image_algo="overlay", batchnorm=False, layernorm=False, dropout=False):
         super().__init__()
         self.num_class = num_classes
         self.layers = []
@@ -211,33 +217,50 @@ class LeNetFF(nn.Module):
         k1, f1, s1, p1, d1 = 5, 6, 1, 0, 2
         k2, f2, s2, p2, d2 = 5, 16, 1, 0, 2
         ps = 2
-        fc1o = 120
-        fc2o = 84
+        fc1o = 1024
+        fc2o = 512
+        fc3o = 256
 
         self.conv1 = FFConvLayer(in_channels=channels, out_channels=f1, kernel_size=k1, stride=s1, padding=p1,
                                  epoch=epoch,
                                  goodness_threshold=goodness,
                                  dilation=d1, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr,
                                  writer=writer)
+        self.batch_norm1 = FFBatchNorm2d(num_features=f1, affine=False) if batchnorm else FFForwardLayer()
         self.conv2 = FFConvLayer(in_channels=f1, out_channels=f2, kernel_size=k2, stride=s2, padding=p2, epoch=epoch,
                                  goodness_threshold=goodness,
                                  dilation=d2, deformable=deformable, pool_kernel=2, pool_stride=ps, lr=lr,
                                  writer=writer)
+        self.batch_norm2 = FFBatchNorm2d(num_features=f2, affine=False) if batchnorm else FFForwardLayer()
 
         x = sample_batch
         x = self.conv1(x)
         x = self.conv2(x)
-        fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
+        conv_op_size = x.shape[1] * x.shape[2] * x.shape[3]
 
         self.flatten = FFFlatten()
-        self.fc1 = FFFCLayer(fc_fx_size, fc1o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
-        laynorm = FFLayerNorm(1, eps=1e-5, elementwise_affine=False)
+
+        self.fc1 = FFFCLayer(conv_op_size, fc1o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
+        self.drop1 = FFDropout(p=0.2) if dropout else FFForwardLayer()
+        self.laynorm1 = FFLayerNorm(fc1o, eps=1e-5, elementwise_affine=False) if layernorm else FFForwardLayer()
+
         self.fc2 = FFFCLayer(fc1o, fc2o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
-        self.fc3 = FFFCLayer(fc2o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
-        # self.softmax = nn.Softmax(dim=num_classes)
-        self.layers = [
-            self.conv1, self.conv2, self.flatten, self.fc1, self.fc2, self.fc3
-        ]
+        self.drop2 = FFDropout(p=0.2) if dropout else FFForwardLayer()
+        self.laynorm2 = FFLayerNorm(fc2o, eps=1e-5, elementwise_affine=False) if layernorm else FFForwardLayer()
+
+        self.fc3 = FFFCLayer(fc2o, fc3o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
+        self.drop3 = FFDropout(p=0.2) if dropout else FFForwardLayer()
+        self.laynorm3 = FFLayerNorm(fc3o, eps=1e-5, elementwise_affine=False) if layernorm else FFForwardLayer()
+
+        self.fc4 = FFFCLayer(fc3o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
+
+        self.layers = [self.conv1, self.batch_norm1, self.conv2, self.batch_norm2,
+                       self.flatten,
+                       self.fc1, self.laynorm1, self.drop1,
+                       self.fc2, self.laynorm2, self.drop2,
+                       self.fc3, self.laynorm3, self.drop3,
+                       self.fc4
+                       ]
 
     def predict(self, x, num_classes):
         goodness_per_label = []
@@ -446,6 +469,100 @@ class FFLayerNorm(nn.LayerNorm):
         return self.forward(x_pos).detach(), self.forward(x_neg).detach()
 
 
+class FFForwardLayer(nn.Module):
+    """
+    This layer does nothing to the input
+    """
+
+    def __int__(self, *args, **kwargs):
+        super(FFForwardLayer, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
+        self.batch_idx = 0
+        self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
+        self.layer_no = None
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFDropout(nn.Dropout):
+    def __int__(self, *args, **kwargs):
+        super(FFDropout, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
+        self.batch_idx = 0
+        self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
+        self.layer_no = None
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFBatchNorm1d(nn.BatchNorm1d):
+    def __int__(self, *args, **kwargs):
+        super(FFBatchNorm1d, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
+        self.batch_idx = 0
+        self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
+        self.layer_no = None
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFBatchNorm2d(nn.BatchNorm2d):
+    def __int__(self, *args, **kwargs):
+        super(FFBatchNorm2d, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
+        self.batch_idx = 0
+        self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
+        self.layer_no = None
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
+class FFBatchNorm3d(nn.BatchNorm3d):
+    def __int__(self, *args, **kwargs):
+        super(FFBatchNorm3d, self).__int__(*args, **kwargs)
+        LeNetFF.LAYER_NO += 1
+        self.layer_no = LeNetFF.LAYER_NO
+        self.batch_idx = 0
+        self.batch_idx = 0
+        self.loss = None
+        self.goodness = None
+        self.layer_no = None
+
+    def goodness(self, x):
+        return None
+
+    def train(self, x_pos, x_neg):
+        return self.forward(x_pos).detach(), self.forward(x_neg).detach()
+
+
 def evaluate(writer, net, opt, test_loader, classes, op_dir, batch_idx):
     with torch.no_grad():
         print("\n\tTesting...")
@@ -550,6 +667,9 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
     net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter, channels=3,
                   goodness=opt.ffgoodness, negative_image_algo=opt.ffnegalg,
+                  batchnorm=opt.batchnorm,
+                  layernorm=opt.layernorm,
+                  dropout=opt.dropout,
                   lr=opt.lr, deformable=opt.deformable, writer=writer)
     print("================Model Summary===============")
     op_dir = pathlib.Path(opt.outf) / opt.name
