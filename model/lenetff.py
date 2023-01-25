@@ -254,6 +254,7 @@ class LeNetFF(nn.Module):
 
         self.fc4 = FFFCLayer(fc3o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
 
+        # compose layers
         self.layers = [self.conv1, self.batch_norm1, self.conv2, self.batch_norm2,
                        self.flatten,
                        self.fc1, self.laynorm1, self.drop1,
