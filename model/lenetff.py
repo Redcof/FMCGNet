@@ -8,7 +8,10 @@ import numpy as np
 import pandas as pd
 import sklearn
 import torch
+import torchvision
+from PIL import Image
 from empatches import EMPatches
+from matplotlib import pyplot as plt
 from torch import nn, optim
 from torchvision.transforms import transforms
 from tqdm import tqdm
@@ -71,8 +74,10 @@ def get_batch_of_hybrid_image(x_batch, y_batch, opt, classes):
         ineg = ineg.clone().detach().cpu().numpy().reshape((opt.isize, opt.isize, opt.nc))
         ipos = x_batch[batch_idx].clone().detach().cpu().numpy().reshape((opt.isize, opt.isize, opt.nc))
         npimage = hybrid_negative_image(opt, classes[cls_idx], ipos=ipos, ineg=ineg)
-        hybrid_b[batch_idx, :, :, :] = torch.from_numpy(npimage)
-    return transforms.Normalize((0.5,), (0.5,))(hybrid_b).to(opt.device)
+        pil = Image.fromarray(npimage)
+        npimage = np.array(opt.transform(pil))
+        hybrid_b[batch_idx, :, :, :] = torch.from_numpy(npimage.reshape((opt.nc, opt.isize, opt.isize)))
+    return hybrid_b.to(opt.device)
 
 
 def hybrid_negative_image(opt, class_lbl, ipos=None, ineg=None):
@@ -146,31 +151,31 @@ is then threshold at 0.5.
             sample2 = df[(df['label_txt'] != class_lbl) & (df['anomaly_size'] >= 0.0)].sample(1)
             ineg = get_patch(sample2, opt)
 
-    ipos = cv2.cvtColor(ipos, cv2.COLOR_BGR2GRAY)
-    ineg = cv2.cvtColor(ineg, cv2.COLOR_BGR2GRAY)
+    ipos = cv2.cvtColor(ipos, cv2.COLOR_RGB2GRAY)
+    ineg = cv2.cvtColor(ineg, cv2.COLOR_RGB2GRAY)
 
     ipos = cv2.normalize(ipos, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     ineg = cv2.normalize(ineg, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
 
     ir = np.random.rand(*ipos.shape)
     ir = cv2.normalize(ir, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-
-    ibl = bluring(bluring(bluring(ir, 2), 4), 2)
+    ibl = bluring(bluring(bluring(ir, 40), 40), 40)
 
     _, imsk = cv2.threshold(ibl, 255 // 2, 255, cv2.THRESH_BINARY)
     _, irmsk = cv2.threshold(ibl, 255 // 2, 255, cv2.THRESH_BINARY_INV)
 
     hybrid = (ipos * imsk) + (ineg * irmsk)
 
-    # images = [ipos, ineg, ir, ibl, imsk, irmsk, hybrid]
+    # images = [ir, ibl, ipos, imsk, hybrid, irmsk, ineg]
+    # title = ["random", "blured", "pos", "* mask", "+", "(1-mask)*", "neg"]
     # cols = len(images)
     # for idx, img in enumerate(images):
-    #     plt.subplot(1, cols, idx + 1)
-    #     plt.imshow(img, cmap="Greys")
-    #
+    #     ax = plt.subplot(1, cols, idx + 1)
+    #     ax.set_title(title[idx])
+    #     plt.imshow(img, cmap="Greys_r")
+    #     # cv2.imshow(title[idx], img)
     # plt.show()
-    # input()
-    hybrid = np.concatenate((hybrid, hybrid, hybrid)).reshape((3, *hybrid.shape))
+    hybrid = cv2.cvtColor(hybrid, cv2.COLOR_GRAY2RGB)
     return hybrid
 
 
@@ -566,6 +571,11 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         elif opt.ffnegalg == "hybrid":
             x_pos = batch_x
             x_neg = get_batch_of_hybrid_image(batch_x, batch_y, opt, classes)
+
+        # write to tensorboard
+        writer.add_image('Positive Images', torchvision.utils.make_grid(x_pos))
+        writer.add_image('Negative Images', torchvision.utils.make_grid(x_neg))
+
         # x_pos = x_pos.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         # x_neg = x_neg.view(-1, 3 * 128 * 128)  # flatten(but batch wise)
         net.train(x_pos, x_neg, batch_idx)
@@ -583,4 +593,10 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
 
 if __name__ == '__main__':
     opt = Options().parse()
-    hybrid_negative_image(opt, "MD")
+    ipos = None
+    ineg = None
+    ipos = cv2.imread("sample7.png")
+    ineg = cv2.imread("sample6.png")
+    ipos = cv2.resize(ipos, (190, 170))
+    ineg = cv2.resize(ineg, (190, 170))
+    hybrid_negative_image(opt, "GA", ipos=ipos, ineg=ineg)

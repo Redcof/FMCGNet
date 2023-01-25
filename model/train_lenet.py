@@ -43,6 +43,7 @@ if __name__ == '__main__':
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,)),
     ])
+    setattr(opt, "transform", transform)
 
     train_loader, test_loader, val_loader = load_atz_data(opt, transform)
 
