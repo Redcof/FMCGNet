@@ -375,7 +375,7 @@ class FFClassificationLayer(FFLayer):
         return x
 
     def goodness(self, x):
-        return x.pow(2).mean(dim=(1,))  # positive mean square as goodness
+        return x.pow(2).mean(dim=(1,))  # positive "mean square" as goodness
 
     def calculate_loss(self, f_pos, f_neg, y_label):
         goodness_pos = self.goodness(f_pos)
@@ -710,6 +710,9 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         fp.write(dt_string_end)
         print(dt_string_start.strip())
         print(dt_string_end.strip())
+    # # save the model
+    # torch.save({'epoch': epoch_idx, 'state_dict': net.state_dict()},
+    #            f'{str(weight_dir)}/net_last.pth' % (epoch_idx, auc))
 
 
 if __name__ == '__main__':

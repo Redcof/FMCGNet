@@ -119,6 +119,7 @@ def load_atz_data(opt, transform=None):
         ])
 
     train_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
+                             object_only=True,
                              atz_dataset_train_or_test_txt=str(curr / 'train.txt'),
                              device=torch_device,
                              classes=atz_classes,
@@ -127,12 +128,14 @@ def load_atz_data(opt, transform=None):
                              subjects=atz_subjects,
                              ablation=atz_ablation,
                              balanced=True,
+                             nc=opt.nc,
                              transform=transform,
                              random_state=opt.manualseed,
                              label_transform=label_transform,
                              global_wavelet_transform=wavelet_transform if opt.atz_wavelet_denoise else None)
 
     test_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
+                            object_only=True,
                             atz_dataset_train_or_test_txt=str(curr / 'test.txt'),
                             device=torch_device,
                             classes=atz_classes,
@@ -141,12 +144,14 @@ def load_atz_data(opt, transform=None):
                             subjects=atz_subjects,
                             ablation=atz_ablation,
                             balanced=True,
+                            nc=opt.nc,
                             transform=transform,
                             random_state=opt.manualseed,
                             label_transform=label_transform,
                             global_wavelet_transform=wavelet_transform if opt.atz_wavelet_denoise else None)
 
     valid_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
+                             object_only=True,
                              atz_dataset_train_or_test_txt=str(curr / 'val.txt'),
                              device=torch_device,
                              classes=atz_classes,
@@ -155,13 +160,15 @@ def load_atz_data(opt, transform=None):
                              subjects=atz_subjects,
                              ablation=atz_ablation,
                              balanced=True,
+                             nc=opt.nc,
                              transform=transform,
                              random_state=opt.manualseed,
                              label_transform=label_transform,
                              global_wavelet_transform=wavelet_transform if opt.atz_wavelet_denoise else None)
     opt.log("Train Dataset '%s' => Normal:Abnormal = %d:%d" % ("train", train_ds.normal_count, train_ds.abnormal_count))
     opt.log("Test Dataset '%s' => Normal:Abnormal = %d:%d" % ("test", test_ds.normal_count, test_ds.abnormal_count))
-    opt.log("Validation Dataset '%s' => Normal:Abnormal = %d:%d" % ("val", valid_ds.normal_count, valid_ds.abnormal_count))
+    opt.log(
+        "Validation Dataset '%s' => Normal:Abnormal = %d:%d" % ("val", valid_ds.normal_count, valid_ds.abnormal_count))
 
     ## DATALOADER
     train_dl = DataLoader(dataset=train_ds, batch_size=opt.batchsize, shuffle=False, drop_last=True)

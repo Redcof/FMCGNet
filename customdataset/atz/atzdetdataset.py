@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from torchvision.transforms import transforms
 
 from model.lenetff import overlay_y_on_x
+from preprocessing.patch import my_patch
 
 
 class ATZDetDataset(Dataset):
@@ -22,8 +23,8 @@ class ATZDetDataset(Dataset):
 
     def __init__(self, atz_patch_dataset_csv, img_dir, phase, atz_dataset_train_or_test_txt=None, transform=None,
                  classes=(), subjects=(), ablation=0, label_transform=None, device="cpu", ff=False,
-                 patch_size=128, patch_overlap=0.2, balanced=False,
-                 train_split=None, test_split=None,
+                 patch_size=128, patch_overlap=0.2, balanced=False, nc=3,
+                 train_split=None, test_split=None, object_only=False,
                  global_wavelet_transform=lambda x: x, random_state=47):
         assert train_split is None or test_split is None, ("Either of train_split and test_split is required."
                                                            "But both values "
@@ -42,6 +43,7 @@ class ATZDetDataset(Dataset):
         self.label_transform = label_transform
         self.phase = phase
         self.img_dir = img_dir
+        self.nc = nc
         self.transform = transform
         # each key: image name, value: transformed image data
         self.cache_image = defaultdict(lambda: None)  # process optimization
@@ -53,6 +55,7 @@ class ATZDetDataset(Dataset):
         self.balanced = balanced
         self.normal_count = 0
         self.abnormal_count = 0
+        self.object_only = object_only
         # read CSV
         self.df = pd.read_csv(atz_patch_dataset_csv)
         self.filter(atz_dataset_train_or_test_txt, classes, subjects)
@@ -83,6 +86,8 @@ class ATZDetDataset(Dataset):
         if atz_dataset_train_or_test_txt:
             with open(atz_dataset_train_or_test_txt, "r") as fp:
                 file_names = ["%s.jpg" % line.strip().replace(".jpg", "") for line in fp.readlines()]
+        if self.object_only:
+            self.df = self.df[self.df['relative_x1y1x2y2'].notna()]
         if file_names:
             # filter dataframe
             self.df = self.df[self.df["image"].isin(file_names)]
@@ -141,9 +146,10 @@ class ATZDetDataset(Dataset):
         patch_id = record[["patch_id"]].values[0]
         label_txt = record[["label_txt"]].values[0]
         x1, x2, y1, y2 = ast.literal_eval(record[["x1x2y1y2"]].values[0])
+        global_x1y1x2y2 = record[["global_x1y1x2y2"]].values[0]
+        relative_x1y1x2y2 = record[["relative_x1y1x2y2"]].values[0]
         anomaly_size = record[["anomaly_size"]].values[0]
-        is_anomaly = record[["is_anamoly"]].values[0]
-        label = record[["label"]].values[0]
+        label = record[["is_anamoly"]].values[0]
         # read image from cache
         img_patches = self.get_cached_image(current_file)
         img_p = img_patches[patch_id]
@@ -152,11 +158,18 @@ class ATZDetDataset(Dataset):
         # pilimage = Image.fromarray(np.uint8(img_p))
         # pilimage.show("%s patch.PNG" % is_good)
 
-        return dict(current_file=current_file, label=label, label_txt=label_txt, x1=x1, x2=x2, y1=y1, y2=y2,
-                    anomaly_size=anomaly_size, is_anomaly=is_anomaly, image_patch=img_p.copy(),
+        return dict(current_file=current_file, label_txt=label_txt, x1=x1, x2=x2, y1=y1, y2=y2,
+                    anomaly_size=anomaly_size, is_anomaly=label, image_patch=img_p.copy(),
                     patch_id=patch_id,
+                    global_x1y1x2y2=ast.literal_eval(global_x1y1x2y2),
+                    relative_x1y1x2y2=ast.literal_eval(relative_x1y1x2y2),
                     #    mostly_dark=not is_good
                     )
+
+    @staticmethod
+    def cord_to_bbox(cord):
+        x1, y1, x2, y2 = cord
+        return x1, y1, abs(x1 - x2), abs(y1 - y2)
 
     def __getitem__(self, idx):
         """Read a patch and return the item"""
@@ -168,7 +181,7 @@ class ATZDetDataset(Dataset):
         # label_txt = metadata["label_txt"]
         # x1, x2, y1, y2 = metadata["x1"], metadata["x2"], metadata["y1"], metadata["y2"]
         # anomaly_size = metadata["anomaly_size"]
-        label = metadata["label"]
+        x, y, w, h = self.cord_to_bbox(metadata["relative_x1y1x2y2"])
         class_id = metadata["is_anomaly"]
         # read image from cache
         image_patch = metadata['image_patch']
@@ -180,7 +193,9 @@ class ATZDetDataset(Dataset):
             tensor_img = transforms.ToTensor()(image_patch)
         # cv2.imshow("patch", image)
         # return (tensor_img.to(self.device), torch.from_numpy(label).to(self.device)), metadata
-        return (tensor_img.to(self.device), torch.tensor(class_id).to(self.device)), metadata
+        return (tensor_img.to(self.device),
+                torch.tensor([class_id]).to(self.device),
+                torch.tensor([(x, y, w, h)]).to(self.device)), metadata
 
     def cache_limit_check(self):
         """
@@ -202,15 +217,23 @@ class ATZDetDataset(Dataset):
             # prepare image path
             img_path = os.path.join(self.img_dir, current_file)
             # read imagedata
-            image = cv2.imread(img_path)
+            if self.nc == 3:
+                image = cv2.imread(img_path)
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                image = cv2.imread(img_path, 0)
             # convert to greyscale
             # image = image.convert("L")
             if self.gbl_wavelet_transform:
                 image = self.gbl_wavelet_transform(image)
 
             # create patches
-            emp = EMPatches()
-            img_patches, indices = emp.extract_patches(image, patchsize=self.patch_size, overlap=self.patch_overlap)
+            # emp = EMPatches()
+            # img_patches, indices = emp.extract_patches(image, patchsize=int(self.patch_size),
+            # overlap=float(self.patch_overlap))
+
+            img_patches, indices, r, c = my_patch(image, int(self.patch_size), float(self.patch_overlap))
+
             # check cache size
             self.cache_limit_check()
             # save image to cache

@@ -25,7 +25,7 @@ class LeNet(nn.Module):
             o = o // pool_stride
         return o
 
-    def __init__(self, sample_batch, if0, channels, num_classes=2, num_anchors=0, deformable=False,
+    def __init__(self, sample_batch, channels, num_classes=2, num_anchors=0, deformable=False,
                  dilation=1):
         """
         LeNet input image size in 32x32  1ch
@@ -35,28 +35,20 @@ class LeNet(nn.Module):
         fco - fully connected out
         """
         super(LeNet, self).__init__()
-        k1, f1, s1, p1, d1 = 5, 6, 1, 0, dilation
-        k2, f2, s2, p2, d2 = 5, 16, 1, 0, dilation
-        k3, f3, s3, p3, d3 = 3, 32, 1, 0, 1
-        k4, f4, s4, p4, d4 = 3, 64, 1, 0, 1
-        k5, f5, s5, p5, d5 = 3, 128, 1, 0, 1
-        ps = 2
-        fc1o = 1024
-        fc2o = 512
+
         self.num_classes = num_classes
+        self.num_anchors = num_anchors
 
         # calculation ends.
         conv = DeformableConv2d if deformable else nn.Conv2d
-        self.activation = nn.ReLU(inplace=True)
-        self.conv1 = nn.Conv2d(in_channels=channels, out_channels=f1, kernel_size=k1, stride=s1, padding=p1,
-                               dilation=d1)
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=ps)  # non-learning layer, we can reuse
-        self.conv2 = nn.Conv2d(in_channels=f1, out_channels=f2, kernel_size=k2, stride=s2, padding=p2,
-                               dilation=d2)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=ps)  # non-learning layer, we can reuse
-        self.conv3 = conv(in_channels=f2, out_channels=f3, kernel_size=k3, stride=s3, padding=p3,
-                          dilation=d3)
 
+        self.conv1 = nn.Conv2d(in_channels=channels, out_channels=6, kernel_size=5, dilation=dilation)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)  # non-learning layer, we can reuse
+        self.conv2 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, dilation=dilation)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv3 = conv(in_channels=16, out_channels=32, kernel_size=3, )
+
+        activation = nn.ReLU(inplace=True)
         # As original LeNet designed for 32x32
         # images patches, we need to calculate
         # feature map size for other image dimensions.
@@ -64,16 +56,19 @@ class LeNet(nn.Module):
         # convolution and pooling before moving
         # into fc layers
         x = sample_batch
-        x = self.pool(self.activation(self.conv1(x)))
-        x = self.pool(self.activation(self.conv2(x)))
-        x = self.activation(self.conv3(x))
+        x = self.pool1(activation(self.conv1(x)))
+        x = self.pool2(activation(self.conv2(x)))
+        x = activation(self.conv3(x))
         fc_fx_size = x.shape[1] * x.shape[2] * x.shape[3]
 
         self.flatten = nn.Flatten(start_dim=1)
-        self.fc1 = nn.Linear(fc_fx_size, fc1o)
-        self.fc2 = nn.Linear(fc1o, fc2o)
-        self.fc3 = nn.Linear(fc2o, num_classes)
-
+        self.fc1 = nn.Linear(in_features=fc_fx_size, out_features=1024)
+        self.fc2 = nn.Linear(in_features=1024, out_features=512)
+        if num_anchors > 0:
+            self.fcbox = nn.Linear(in_features=512, out_features=num_anchors * 4)  # 4 for bounding box regression
+            self.fc3 = nn.Linear(in_features=512, out_features=num_classes * num_anchors)
+        else:
+            self.fc3 = nn.Linear(in_features=512, out_features=num_classes)
         # self.conv3 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, padding=1)
         # self.conv4 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
         # self.conv5 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
@@ -86,19 +81,18 @@ class LeNet(nn.Module):
         # self.num_classes = num_classes
 
         # self.softmax = nn.Softmax(dim=num_classes)
+        self.activation = activation
 
     def forward(self, x):
         # Perform the forward pass of the LeNet architecture
         x = self.activation(self.conv1(x))
-        x = self.pool(x)
+        x = self.pool1(x)
         x = self.activation(self.conv2(x))
-        x = self.pool(x)
+        x = self.pool2(x)
         x = self.activation(self.conv3(x))
         x = self.flatten(x)  # flatten(but batch wise)
         x = self.activation(self.fc1(x))
         x = self.activation(self.fc2(x))
-        x = self.activation(self.fc3(x))
-        # x = self.softmax(x)
 
         # # Additional layers for object detection
         # x = self.activation(self.conv3(x))
@@ -108,16 +102,19 @@ class LeNet(nn.Module):
         # x = self.activation(self.conv7(x))
         # x = x.view(x.size(0), -1)
         # x = self.activation(self.fc4(x))
-        #
-        # # Bounding box regression
-        # bboxes = self.fc5(x)
-        # bboxes = bboxes.view(bboxes.size(0), self.num_anchors, 4)
 
-        # Classification
-        # logits = self.fc6(x)
-        # logits = logits.view(logits.size(0), self.num_anchors, self.num_classes)
-        # return bboxes, logits
-        return x
+        # Bounding box regression
+        if self.num_anchors > 0:
+            bboxes = self.fcbox(x)
+            bboxes = bboxes.view(bboxes.size(0), self.num_anchors, 4)
+
+            # Classification
+            logits = self.activation(self.fc3(x))
+            logits = logits.view(logits.size(0), self.num_anchors, self.num_classes)
+            return bboxes, logits
+        else:
+            logits = self.activation(self.fc3(x))
+        return logits
 
 
 # ######################################################################################
@@ -227,7 +224,7 @@ def train_one_epoch(opt, writer, epoch_idx, num_epoch, model, meta_dict, train_l
     meta_dict["train_running_loss"] = 0.0
     for batch_idx, data in enumerate(tqdm(train_loader, leave=False, total=len(train_loader))):
         meta_dict["step_ctr"] += opt.batchsize
-        (inputs, targets), meta = data
+        (inputs, targets, bboxs), meta = data
         loss = train_one_batch(model, inputs, targets, optimizer, criterion_class_loss)
         # create grid of images
         img_grid = torchvision.utils.make_grid(inputs)
@@ -250,7 +247,8 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
 
     # initialize the model
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
-    net = LeNet(sample_batch, if0=opt.isize, channels=opt.nc, num_classes=len(classes),
+    net = LeNet(sample_batch, channels=opt.nc, num_classes=len(classes),
+                num_anchors=0,
                 deformable=opt.deformable, dilation=opt.dilation)
     print("================Model Summary===============")
     op_dir = pathlib.Path(opt.outf) / opt.name

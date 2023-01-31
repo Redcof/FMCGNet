@@ -49,9 +49,10 @@ if __name__ == '__main__':
 
     if opt.ff:
         from model.lenetff import train_loop
-
-        train_loop(opt, CLASSE_IDX, writer, train_loader, test_loader, val_loader)
     else:
-        from model.lenet import train_loop
+        if opt.detection:
+            from model.lenetdet import train_loop
+        else:
+            from model.lenet import train_loop
 
-        train_loop(opt, CLASSE_IDX, writer, train_loader, test_loader, val_loader)
+    train_loop(opt, CLASSE_IDX, writer, train_loader, test_loader, val_loader)

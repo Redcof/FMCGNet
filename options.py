@@ -49,13 +49,15 @@ class Options:
                                  help='Whether to use layer normalization or not')
         self.parser.add_argument('--ff', action='store_true', default=False,
                                  help='Enable forward-forward algorithm or not')
+        self.parser.add_argument('--detection', action='store_true', default=False,
+                                 help='Use this to perform detection task else classification')
         self.parser.add_argument('--ffnegalg', default='overlay', choices=['overlay', 'hybrid'],
                                  help='Which algorithm to use to generate negative data as discussed in original paper.')
         self.parser.add_argument('--loss', type=str, default='CE', choices=['CE', 'SFL', 'BCE', 'FL'],
                                  help='CEL:Categorical Cross-Entropy Loss, SFL: Sigmoid focal loss,'
                                       ' BCEL: Balanced Cross-entropy loss')
         self.parser.add_argument('--isize', type=int, default=128, choices=[128, 64], help='input image size.')
-        self.parser.add_argument('--nc', type=int, default=3, help='input image channels')
+        self.parser.add_argument('--nc', type=int, default=1, help='input image channels')
         self.parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'gpu'],
                                  help='Device: gpu | cpu ')
         self.parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment')
@@ -68,11 +70,11 @@ class Options:
         self.parser.add_argument('--phase', type=str, default='train', choices=["train", "val", "test"],
                                  help='train, val, test, etc')
         self.parser.add_argument('--iter', type=int, default=0, help='Start from iteration i')
-        self.parser.add_argument('--niter', type=int, default=2, help='number of epochs to train for')
+        self.parser.add_argument('--niter', type=int, default=5, help='number of epochs to train for')
         self.parser.add_argument('--lr', type=float, default=0.001, help='Learning rate default:0.001')
         # ATZ dataset
         self.parser.add_argument('--atz_patch_db',
-                                 default="../customdataset/atz/atz_patch_dataset__3_128_36_v2_10%_30_99%.csv",
+                                 default="../customdataset/atz/atz_patch_dataset__3_128_27_v3_10%_30_99%_multiple_refbox.csv",
                                  help='required. csv file path for atz patch dataset')
         self.parser.add_argument('--atz_wavelet',
                                  default="{'wavelet':'sym4', 'method':'VisuShrink','level':3, 'mode':'hard'}",
