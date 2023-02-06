@@ -78,10 +78,14 @@ def universal_threshold(x, coeff, level):
 def wavelet_denoise_rgb(image, channel_axis, wavelet='bior4.4', method='VisuShrink',
                         decomposition_level=2, threshold_mode='soft', psnr=False):
     # CODE: https://www.exptech.co.in/2021/03/in-this-video-wavelet-transform-based.html
+    convert2ycbcr = True
+    if image.ndim == 2:
+        channel_axis = None
+        convert2ycbcr = False
     sigma = estimate_sigma(image, average_sigmas=True, channel_axis=channel_axis)
     deno_scaled_img = denoise_wavelet(image, sigma=sigma, wavelet=wavelet, mode=threshold_mode,
                                       wavelet_levels=decomposition_level, channel_axis=channel_axis,
-                                      convert2ycbcr=True, method=method,
+                                      convert2ycbcr=convert2ycbcr, method=method,
                                       rescale_sigma=True)
     # deno_scaled_img values between [0-1]
     # rescale back the de-noised image to [0-255] space

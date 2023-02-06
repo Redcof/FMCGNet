@@ -666,7 +666,8 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     dt_string_start = now.strftime("%d/%m/%Y %H:%M:%S\n")
     num_batches = len(train_loader)
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
-    net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter, channels=3,
+    net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter,
+                  channels=opt.nc,
                   goodness=opt.ffgoodness, negative_image_algo=opt.ffnegalg,
                   batchnorm=opt.batchnorm,
                   layernorm=opt.layernorm,

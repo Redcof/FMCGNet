@@ -6,7 +6,7 @@ export DATA_ROOT="/Users/soumen/Downloads/Datasets/ActiveTerahertzImagingDataset
 export DATA_ROOT="/mnt/c/Users/dndlssardar/Downloads/THZ_dataset_det_VOC/JPEGImages"                             # wsl
 
 python model/train_lenet.py \
-  --name exp8_fflenet_deform_dil2__hybrid__wavelet_lr_005 \
+  --name exp17_fflenet_deform_dil2_hyBNLNDO__hybrid__wavelet_lr_0001 \
   \
   --phase train \
   --dataroot $DATA_ROOT \
@@ -18,5 +18,5 @@ python model/train_lenet.py \
   --area_threshold 0.05 \
   --atz_classes "['KK', 'CK', 'CL', 'MD', 'SS', 'GA']" \
   --atz_wavelet "{'wavelet':'sym4', 'method':'VisuShrink','level':3, 'mode':'hard'}" \
-  --niter 40 --lr 0.005 --deformable --dilation 2 --atz_wavelet_denoise  \
-  --ff --ffgoodness 2 --ffnegalg hybrid
+  --niter 30 --lr 0.0001 --deformable --dilation 2 --atz_wavelet_denoise  \
+  --ff --ffgoodness 2  --batchnorm --layernorm --dropout --ffnegalg hybrid
