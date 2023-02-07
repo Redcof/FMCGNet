@@ -318,9 +318,8 @@ class FFLayer(nn.Module):
         goodness_neg = self.goodness(f_neg)
         # The following loss pushes pos (neg) samples to
         # values larger (smaller) than the self.threshold.
-        loss = torch.log(1 + torch.exp(torch.cat([
-            -goodness_pos + self.threshold,
-            goodness_neg - self.threshold]))).mean()
+        val = torch.cat([-goodness_pos + self.threshold, goodness_neg - self.threshold])
+        loss = torch.log(1 + torch.exp(val)).mean()
         if self.writer:
             self.writer.add_scalars('Goodness', {"Layer-%d" % self.layer_no: goodness_pos.mean()},
                                     self.batch_idx + 1)
@@ -377,14 +376,13 @@ class FFClassificationLayer(FFLayer):
     def goodness(self, x):
         return x.pow(2).mean(dim=(1,))  # positive "mean square" as goodness
 
-    def calculate_loss(self, f_pos, f_neg, y_label):
+    def calculate_loss(self, f_pos, f_neg, y_label=None):
         goodness_pos = self.goodness(f_pos)
         goodness_neg = self.goodness(f_neg)
         # The following loss pushes pos (neg) samples to
         # values larger (smaller) than the self.threshold.
-        loss = torch.log(1 + torch.exp(torch.cat([
-            -goodness_pos + self.threshold,
-            goodness_neg - self.threshold]))).mean()
+        val = torch.cat([-goodness_pos + self.threshold, goodness_neg - self.threshold])
+        loss = torch.log(1 + torch.exp(val)).mean()
         # additional classification loss
         class_loss_value = self.criterion(f_pos, y_label)
         return loss + class_loss_value

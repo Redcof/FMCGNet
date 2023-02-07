@@ -24,6 +24,7 @@ class ATZDetDataset(Dataset):
     def __init__(self, atz_patch_dataset_csv, img_dir, phase, atz_dataset_train_or_test_txt=None, transform=None,
                  classes=(), subjects=(), ablation=0, label_transform=None, device="cpu", ff=False,
                  patch_size=128, patch_overlap=0.2, balanced=False, nc=3, detection=False,
+                 empatch=True, no_rand=False,
                  train_split=None, test_split=None, object_only=False,
                  global_wavelet_transform=lambda x: x, random_state=47):
         assert train_split is None or test_split is None, ("Either of train_split and test_split is required."
@@ -35,7 +36,7 @@ class ATZDetDataset(Dataset):
             self.train_split = 0.8
         elif test_split is not None:
             self.train_split = 1 - test_split
-        self.empatch = True
+        self.empatch = empatch
         self.detection = detection
         if subjects is None:
             subjects = []
@@ -61,7 +62,8 @@ class ATZDetDataset(Dataset):
         # read CSV
         self.df = pd.read_csv(atz_patch_dataset_csv)
         self.filter(atz_dataset_train_or_test_txt, classes, subjects)
-        self.shuffle()
+        if not no_rand:
+            self.shuffle()
         self.ablation = ablation
         self.ff = ff
 

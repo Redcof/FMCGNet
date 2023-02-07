@@ -58,6 +58,7 @@ class Options:
                                       ' BCEL: Balanced Cross-entropy loss')
         self.parser.add_argument('--isize', type=int, default=128, choices=[128, 64], help='input image size.')
         self.parser.add_argument('--nc', type=int, default=1, help='input image channels')
+        self.parser.add_argument('--iou', type=float, default=0.2, help='IoU threshold for detection')
         self.parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'gpu'],
                                  help='Device: gpu | cpu ')
         self.parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment')
@@ -80,6 +81,8 @@ class Options:
                                  default="{'wavelet':'sym4', 'method':'VisuShrink','level':3, 'mode':'hard'}",
                                  help='required. csv file path for atz patch dataset')
         self.parser.add_argument('--atz_patch_overlap', default=0.2, help='Patch overlap')
+        self.parser.add_argument('--atz_mypatch', action="store_true",
+                                 help='Whether to use Empatch or my_patch library or not to create patches')
         self.parser.add_argument('--atz_wavelet_denoise', action="store_true",
                                  help='Flag to perform wavelet based denoise')
         self.parser.add_argument('--atz_classes', default=[], help='Specify a list of classes for experiment.'

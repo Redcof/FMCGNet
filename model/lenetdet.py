@@ -1,3 +1,4 @@
+import ast
 import os
 import pathlib
 from collections import defaultdict
@@ -7,19 +8,26 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchvision
-from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt, patches
 from sklearn.metrics import roc_auc_score
 from torch import optim, ops
 from torch.functional import F
+from torch.utils.data import DataLoader
+from torchvision.transforms import transforms
 from tqdm import tqdm
 
+from customdataset.atz.atzdetdataset import ATZDetDataset
+from customdataset.atz.dataloader import label_transform, C, wavelet_transform, NORMAL_CLASSES, CLASSE_IDX
 from model.FocalLoss import FocalLoss
 from model.dcn import DeformableConv2d
+import numpy as np
+from sklearn.metrics import average_precision_score
 
 # ######################################################################################
 # helper function to show an image
 # (used in the `plot_classes_preds` function below)
 from model.lenet import LeNet
+from preprocessing.patch import my_patch
 
 
 def matplotlib_imshow(img, one_channel=False):
@@ -68,10 +76,6 @@ def plot_classes_preds(net, images, labels, classes):
     return fig
 
 
-import numpy as np
-from sklearn.metrics import average_precision_score
-
-
 def calculate_iou(bbox1, bbox2):
     x1, y1, w1, h1 = bbox1
     x2, y2, w2, h2 = bbox2
@@ -117,7 +121,111 @@ def calc_mAP(gt_bboxes, pred_bboxes, pred_scores, iou_threshold=0.5):
     return np.mean(avg_precision_scores)
 
 
-def evaluate(epoch_idx, num_epochs, model, test_loader, meta_dict, detailed_output=False, iou_threshold=0.5):
+def add_bbox(box_x, box_y, box_w, box_h, color, ax, linewidth=1):
+    rect = patches.Rectangle((box_x, box_y), box_w, box_h, linewidth=linewidth,
+                             edgecolor=color, facecolor='none')
+    # Add the patch to the Axes
+    ax.add_patch(rect)
+
+
+def draw_bbox(writer, model, opt):
+    model.eval()
+    try:
+        assert os.path.exists(opt.atz_patch_db)  # mandatory for ATZ
+
+        curr = pathlib.Path(__file__).parents[0]
+
+        patch_dataset_csv = opt.atz_patch_db
+        atz_ablation = opt.atz_ablation
+        torch_device = torch.device("cuda:0" if opt.device != 'cpu' else "cpu")
+
+        try:
+            atz_classes = ast.literal_eval(opt.atz_classes)
+        except ValueError:
+            atz_classes = []
+        atz_classes.extend(NORMAL_CLASSES)
+
+        try:
+            atz_subjects = ast.literal_eval(opt.atz_subjects)
+        except ValueError:
+            atz_subjects = []
+
+        try:
+            atz_wavelet = ast.literal_eval(opt.atz_wavelet)
+        except ValueError:
+            atz_wavelet = {'wavelet': 'sym4', 'method': 'VisuShrink', 'level': 1, 'mode': 'soft'}
+
+        object_area_threshold = opt.area_threshold  # 10%
+        patchsize = opt.isize
+        PATCH_AREA = patchsize ** 2
+
+        transform = transforms.Compose([
+            transforms.Resize((opt.isize, opt.isize)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
+        ])
+
+        render_bbox_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
+                                       object_only=opt.detection,
+                                       detection=opt.detection,
+                                       empatch=not opt.atz_mypatch,
+                                       atz_dataset_train_or_test_txt='customdataset/atz/render.txt',
+                                       device=torch_device,
+                                       classes=[],
+                                       patch_size=opt.isize,
+                                       patch_overlap=opt.atz_patch_overlap,
+                                       subjects=[],
+                                       ablation=0,
+                                       balanced=True,
+                                       nc=opt.nc,
+                                       no_rand=True,
+                                       transform=transform,
+                                       random_state=opt.manualseed,
+                                       label_transform=label_transform(C, PATCH_AREA, object_area_threshold),
+                                       global_wavelet_transform=wavelet_transform(
+                                           atz_wavelet) if opt.atz_wavelet_denoise else None)
+        render_bbox_dl = DataLoader(dataset=render_bbox_ds, batch_size=opt.batchsize, shuffle=False, drop_last=False)
+        with torch.no_grad():
+            file_nm = os.path.join(opt.dataroot, "T_P_M6_MD_F_LL_CK_F_C_WB_F_RT_front_0906154134.jpg")
+            imgs = cv2.imread(file_nm, 0)
+            patches, _, _, _ = my_patch(imgs)
+            for (images, labels, bboxs), meta in tqdm(render_bbox_dl, leave=False, total=len(render_bbox_dl)):
+                timages = torch.empty_like(images.detach().cpu())
+                bboxs_pred, logits_pred = model(images)
+                logits_pred = torch.softmax(logits_pred, dim=-1)
+                col = 3
+                rows = 9
+                for idx, (image, bbox, pred, patch_idx) in enumerate(
+                        zip(images, bboxs_pred, logits_pred, meta['patch_id'])):
+                    # image = cv2.normalize(image.detach().cpu().view(opt.isize, opt.isize).numpy(), None, 0, 255,
+                    #                       cv2.NORM_MINMAX, cv2.CV_8U)
+                    image = 255 - patches[patch_idx]
+                    x, y, w, h = bbox.detach().cpu().view(4, 1).numpy().flatten()
+                    proba = pred.detach().cpu().numpy().flatten()
+                    max_proba_idx = np.argmax(proba)
+                    best_cls = CLASSE_IDX[max_proba_idx]
+                    best_proba = proba[max_proba_idx]
+                    try:
+                        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 255, 255), 2)
+                        cv2.putText(image, '%s[%0.3f]' % (best_cls, best_proba), (x + w + 10, y + h), 0, 0.3,
+                                    (255, 255, 255))
+                        cv2.imshow("%s" % labels[idx], image)
+                    except:
+                        ...
+                    # ax = plt.subplot(col, rows, idx + 1)
+                    # ax.imshow(image)
+                    # add_bbox(*bbox.detach().cpu().view(4, 1), 'r', ax, linewidth=1)
+                    timages[idx, :, :, :] = torch.from_numpy(image).view(1, opt.isize, opt.isize)
+                # create grid of images
+                img_grid = torchvision.utils.make_grid(timages)
+                # write to tensorboard
+                writer.add_image('Batch Detection', img_grid)
+    except:
+        ...
+    model.train()
+
+
+def evaluate(epoch_idx, num_epochs, model, test_loader, meta_dict, opt, detailed_output=False, iou_threshold=0.5):
     print("\nTesting... epoch:[%d/%d]" % (epoch_idx + 1, num_epochs))
     model.eval()
     labels_all, probs_all, gt_bbox_all, prob_bbox_all = [], [], [], []
@@ -125,10 +233,10 @@ def evaluate(epoch_idx, num_epochs, model, test_loader, meta_dict, detailed_outp
         for (images, labels, bboxs), meta in tqdm(test_loader, leave=False, total=len(test_loader)):
             bboxs_pred, logits_pred = model(images)
             probs = torch.softmax(logits_pred, dim=-1)
-            probs_all.append(probs.numpy())
-            labels_all.append(labels.numpy())
-            gt_bbox_all.append(bboxs.numpy())
-            prob_bbox_all.append(bboxs_pred.numpy())
+            probs_all.append(probs.cpu().numpy())
+            labels_all.append(labels.cpu().numpy())
+            gt_bbox_all.append(bboxs.cpu().numpy())
+            prob_bbox_all.append(bboxs_pred.cpu().numpy())
     # flatten the items
     labels_all = np.concatenate(labels_all)
     probs_all = np.concatenate(probs_all)
@@ -180,7 +288,8 @@ def train_one_batch(num_classes, model, images, labels, bboxes, optimizer, crite
     return loss
 
 
-def train_one_epoch(num_classes, opt, writer, epoch_idx, num_epoch, model, meta_dict, train_loader, optimizer, criterion_class_loss,
+def train_one_epoch(num_classes, opt, writer, epoch_idx, num_epoch, model, meta_dict, train_loader, optimizer,
+                    criterion_class_loss,
                     criterion_bbox_loss):
     print("\nTraining... epoch:[%d/%d]" % (epoch_idx + 1, num_epoch))
     model.train()  # activate training mode
@@ -188,7 +297,8 @@ def train_one_epoch(num_classes, opt, writer, epoch_idx, num_epoch, model, meta_
     for batch_idx, data in enumerate(tqdm(train_loader, leave=False, total=len(train_loader))):
         meta_dict["step_ctr"] += opt.batchsize
         (inputs, targets, bboxs), meta = data
-        loss = train_one_batch(num_classes, model, inputs, targets, bboxs, optimizer, criterion_class_loss, criterion_bbox_loss)
+        loss = train_one_batch(num_classes, model, inputs, targets, bboxs, optimizer, criterion_class_loss,
+                               criterion_bbox_loss)
         # create grid of images
         img_grid = torchvision.utils.make_grid(inputs)
         # write to tensorboard
@@ -263,10 +373,12 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         train_one_epoch(len(classes), opt, writer, epoch_idx, num_epochs, net, meta_dict, train_loader, optimizer,
                         criterion_class_loss, criterion_bbox_loss)
 
+        # draw bbox
+        draw_bbox(writer, net, opt)
         # test
         detailed = True
-        auc, mAP, auc_ls, auc_dict = evaluate(epoch_idx, num_epochs, net, test_loader, meta_dict,
-                                              detailed_output=detailed, iou_threshold=0.2)
+        auc, mAP, auc_ls, auc_dict = evaluate(epoch_idx, num_epochs, net, test_loader, meta_dict, opt,
+                                              detailed_output=detailed, iou_threshold=opt.iou)
         if auc > max_auc \
                 or any([cls_auc > perclass_max_auc[cls_idx] for cls_idx, cls_auc in auc_dict.items()]) \
                 or mAP > max_mAP:
