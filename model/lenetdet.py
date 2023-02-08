@@ -225,7 +225,7 @@ def draw_bbox(writer, model, opt):
     model.train()
 
 
-def evaluate(epoch_idx, num_epochs, model, test_loader, meta_dict, opt, detailed_output=False, iou_threshold=0.5):
+def evaluate_mAP(epoch_idx, num_epochs, model, test_loader, meta_dict, opt, detailed_output=False, iou_threshold=0.5):
     print("\nTesting... epoch:[%d/%d]" % (epoch_idx + 1, num_epochs))
     model.eval()
     labels_all, probs_all, gt_bbox_all, prob_bbox_all = [], [], [], []
@@ -321,8 +321,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     # initialize the model
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
     net = LeNet(sample_batch, channels=opt.nc, num_classes=len(classes),
-                num_anchors=1,
-                deformable=opt.deformable, dilation=opt.dilation)
+                num_anchors=1, deformable=opt.deformable, dilation=opt.dilation)
     print("================Model Summary===============")
     op_dir = pathlib.Path(opt.outf) / opt.name
     os.makedirs(str(op_dir), exist_ok=True)
@@ -377,8 +376,8 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         draw_bbox(writer, net, opt)
         # test
         detailed = True
-        auc, mAP, auc_ls, auc_dict = evaluate(epoch_idx, num_epochs, net, test_loader, meta_dict, opt,
-                                              detailed_output=detailed, iou_threshold=opt.iou)
+        auc, mAP, auc_ls, auc_dict = evaluate_mAP(epoch_idx, num_epochs, net, test_loader, meta_dict, opt,
+                                                  detailed_output=detailed, iou_threshold=opt.iou)
         if auc > max_auc \
                 or any([cls_auc > perclass_max_auc[cls_idx] for cls_idx, cls_auc in auc_dict.items()]) \
                 or mAP > max_mAP:

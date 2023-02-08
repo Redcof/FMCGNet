@@ -208,10 +208,14 @@ def overlay_y_on_x(x, y, n_classes, inplace=False):
 class LeNetFF(nn.Module):
     LAYER_NO = 0
 
-    def __init__(self, sample_batch, if0, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None,
-                 goodness=2.0, negative_image_algo="overlay", batchnorm=False, layernorm=False, dropout=False):
+    def __init__(self, sample_batch, epoch, num_classes, channels=1, deformable=False, lr=0.001, writer=None,
+                 goodness=2.0, negative_image_algo="overlay", batchnorm=False, layernorm=False, dropout=False,
+                 additional_class_loss=nn.CrossEntropyLoss(),
+                 additional_bbox_loss=nn.SmoothL1Loss(),
+                 num_anchors=0):
         super().__init__()
         self.num_class = num_classes
+        self.num_anchors = num_anchors
         self.layers = []
         self.negative_image_algo = negative_image_algo
         k1, f1, s1, p1, d1 = 5, 6, 1, 0, 2
@@ -251,17 +255,49 @@ class LeNetFF(nn.Module):
         self.fc3 = FFFCLayer(fc2o, fc3o, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
         self.drop3 = FFDropout(p=0.2) if dropout else FFForwardLayer()
         self.laynorm3 = FFLayerNorm(fc3o, eps=1e-5, elementwise_affine=False) if layernorm else FFForwardLayer()
+        self.detection = num_anchors > 0
+        if self.detection:
+            self.regress = FFFCLayer(fc3o, 4, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch,
+                                     criterion=additional_bbox_loss)
+            self.classify = FFClassificationLayer(fc3o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer,
+                                                  epoch=epoch, criterion=additional_class_loss)
 
-        self.fc4 = FFFCLayer(fc3o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
+            # compose layers
+            self.layers = [self.conv1, self.batch_norm1, self.conv2, self.batch_norm2,
+                           self.flatten,
+                           self.fc1, self.laynorm1, self.drop1,
+                           self.fc2, self.laynorm2, self.drop2,
+                           self.fc3, self.laynorm3, self.drop3,
+                           ]
+            self.ground_truth_class = None
+            self.ground_truth_bbox = None
+        else:
+            self.fc4 = FFFCLayer(fc3o, num_classes, lr=lr, goodness_threshold=goodness, writer=writer, epoch=epoch)
 
-        # compose layers
-        self.layers = [self.conv1, self.batch_norm1, self.conv2, self.batch_norm2,
-                       self.flatten,
-                       self.fc1, self.laynorm1, self.drop1,
-                       self.fc2, self.laynorm2, self.drop2,
-                       self.fc3, self.laynorm3, self.drop3,
-                       self.fc4
-                       ]
+            # compose layers
+            self.layers = [self.conv1, self.batch_norm1, self.conv2, self.batch_norm2,
+                           self.flatten,
+                           self.fc1, self.laynorm1, self.drop1,
+                           self.fc2, self.laynorm2, self.drop2,
+                           self.fc3, self.laynorm3, self.drop3,
+                           self.fc4
+                           ]
+
+    def setTrainigMode(self, layer, mode):
+        layer.training = mode
+        for module in layer.children():
+            module.train(mode)
+
+    def eval(self, mode=True):
+        for idx, layer in enumerate(self.layers):
+            self.setTrainigMode(layer, not mode)
+        if self.detection:
+            self.setTrainigMode(self.classify, not mode)
+            self.setTrainigMode(self.regress, not mode)
+
+    def set_detection_input(self, batch_tgt, batch_bbox):
+        self.ground_truth_class = batch_tgt
+        self.ground_truth_bbox = batch_bbox
 
     def predict(self, x, num_classes):
         goodness_per_label = []
@@ -282,16 +318,40 @@ class LeNetFF(nn.Module):
         goodness_per_label = torch.cat(goodness_per_label, 0)
         return goodness_per_label.argmax(0), h
 
+    @staticmethod
+    def loss_log(layer):
+        try:
+            print("\tLayer-", layer.layer_no, "Loss:", layer.loss, "Goodness:", layer.goodness_val)
+        except:
+            ...
+
     def train(self, x_pos, x_neg, batch_idx):
         h_pos, h_neg = x_pos, x_neg
         for idx, layer in enumerate(self.layers):
             print('\tTraining Layer:[%d/%d]...' % (idx, LeNetFF.LAYER_NO))
             layer.batch_idx = batch_idx
             h_pos, h_neg = layer.train(h_pos, h_neg)
-            try:
-                print("\tLayer-", layer.layer_no, "Loss:", layer.loss, "Goodness:", layer.goodness_val)
-            except:
-                ...
+            self.loss_log(layer)
+        if self.detection:
+            print('\tTraining Layer:[%d/%d]...' % (LeNetFF.LAYER_NO, LeNetFF.LAYER_NO))
+            self.classify.train(h_pos, h_neg, self.ground_truth_class)
+            self.regress.train(h_pos, h_neg, self.ground_truth_bbox)
+            self.loss_log(self.regress)
+            self.loss_log(self.classify)
+
+    def forward(self, x_pos):
+        h_pos = x_pos
+        for idx, layer in enumerate(self.layers):
+            h_pos = layer.forward(h_pos)
+        if self.detection:
+            bboxes = self.regress.forward(h_pos)
+            bboxes = bboxes.view(bboxes.size(0), self.num_anchors, 4)
+
+            logits = self.classify.forward(h_pos)
+            logits = logits.view(logits.size(0), self.num_anchors, self.num_class)
+            return bboxes, logits
+        else:
+            return h_pos
 
 
 class FFLayer(nn.Module):
@@ -305,7 +365,7 @@ class FFLayer(nn.Module):
         self.writer = writer
         self.batch_idx = 0
         self.activation = torch.nn.ReLU() if activation is None else activation
-        self.criterion = self.calculate_loss if criterion is None else criterion
+        self.calculate_additional_loss = criterion
         self.loss = float("-inf")
         self.goodness_val = 0.0
 
@@ -328,12 +388,15 @@ class FFLayer(nn.Module):
         self.goodness_val = goodness_pos.mean().item()
         return loss
 
-    def train(self, x_pos, x_neg):
+    def train(self, x_pos, x_neg, ground_truth=None):
         for epoch_idx in tqdm(range(self.num_epochs)):
             f_pos = self.forward(x_pos)
             f_neg = self.forward(x_neg)
             # calculate loss
-            loss = self.criterion(f_pos, f_neg)
+            loss = self.calculate_loss(f_pos, f_neg)
+            if self.calculate_additional_loss is not None and ground_truth is not None:
+                f_pos = self.forward(x_pos)
+                loss = self.calculate_additional_loss(f_pos, ground_truth, loss)
             self.optimizer.zero_grad()  # set gradients to 0
             # this backward just compute the derivative and hence
             # is not considered backpropagation.
@@ -375,17 +438,6 @@ class FFClassificationLayer(FFLayer):
 
     def goodness(self, x):
         return x.pow(2).mean(dim=(1,))  # positive "mean square" as goodness
-
-    def calculate_loss(self, f_pos, f_neg, y_label=None):
-        goodness_pos = self.goodness(f_pos)
-        goodness_neg = self.goodness(f_neg)
-        # The following loss pushes pos (neg) samples to
-        # values larger (smaller) than the self.threshold.
-        val = torch.cat([-goodness_pos + self.threshold, goodness_neg - self.threshold])
-        loss = torch.log(1 + torch.exp(val)).mean()
-        # additional classification loss
-        class_loss_value = self.criterion(f_pos, y_label)
-        return loss + class_loss_value
 
 
 class FFFCOrigLayer(FFLayer):
@@ -485,6 +537,9 @@ class FFForwardLayer(nn.Module):
 
     def goodness(self, x):
         return None
+
+    def forward(self, x):
+        return x
 
     def train(self, x_pos, x_neg):
         return self.forward(x_pos).detach(), self.forward(x_neg).detach()
@@ -664,7 +719,7 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     dt_string_start = now.strftime("%d/%m/%Y %H:%M:%S\n")
     num_batches = len(train_loader)
     sample_batch = torch.rand((opt.batchsize, opt.nc, opt.isize, opt.isize))
-    net = LeNetFF(sample_batch=sample_batch, if0=opt.niter, num_classes=len(classes), epoch=opt.niter,
+    net = LeNetFF(sample_batch=sample_batch, num_classes=len(classes), epoch=opt.niter,
                   channels=opt.nc,
                   goodness=opt.ffgoodness, negative_image_algo=opt.ffnegalg,
                   batchnorm=opt.batchnorm,

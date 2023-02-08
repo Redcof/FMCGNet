@@ -6,9 +6,9 @@ export DATA_ROOT="/Users/soumen/Downloads/Datasets/ActiveTerahertzImagingDataset
 export DATA_ROOT="/mnt/c/Users/dndlssardar/Downloads/THZ_dataset_det_VOC/JPEGImages"                             # wsl
 
 python model/train_lenet.py \
-  --name exp21_0001_FL_defmdila_wv_ep60_iou02 \
+  --name exp24_0001_FL_dfdil_wv_ep600_iou05 \
   \
-  --phase train --niter 60 \
+  --phase train --niter 600 \
   --dataroot $DATA_ROOT \
   --outf=./output/DET --detection\
   --atz_mypatch \
@@ -22,5 +22,5 @@ python model/train_lenet.py \
   --manualseed 47 \
   --lr 0.0001 \
   --loss FL \
-  --iou 0.2 \
-   --dilation 2 --deformable
+  --iou 0.5 \
+  --dilation 2 --deformable

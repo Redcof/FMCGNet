@@ -48,7 +48,10 @@ if __name__ == '__main__':
     train_loader, test_loader, val_loader = load_atz_data(opt, transform)
 
     if opt.ff:
-        from model.lenetff import train_loop
+        if opt.detection:
+            from model.lenetffdet import train_loop
+        else:
+            from model.lenetff import train_loop
     else:
         if opt.detection:
             from model.lenetdet import train_loop
