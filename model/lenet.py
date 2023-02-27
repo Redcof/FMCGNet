@@ -319,3 +319,5 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
             print("%s:%0.2f, " % (classes[class_idx], cls_auc), end="")
         print("]. MAX meanAUC:", max_auc)
     print('Finished LeNet Training')
+    writer.flush()
+    writer.close()

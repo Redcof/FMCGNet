@@ -3,6 +3,8 @@ keras
 torch
 torchvision
 tesnorboard
+tensorboardX
+torchmetrics
 PIL
 opencv
 numpy

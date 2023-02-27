@@ -11,7 +11,7 @@ import torch.optim as optim
 import torchvision
 from matplotlib import pyplot as plt
 from torch import nn, ops
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from torchvision import transforms
 
 from tqdm import tqdm
@@ -41,6 +41,8 @@ if __name__ == '__main__':
     transform = transforms.Compose([
         transforms.Resize((opt.isize, opt.isize)),
         transforms.ToTensor(),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+        transforms.RandomRotation((-30, 30), center=None, fill=0),
         transforms.Normalize((0.5,), (0.5,)),
     ])
     setattr(opt, "transform", transform)

@@ -9,15 +9,16 @@ import torch
 import torch.nn as nn
 import torchvision
 from matplotlib import pyplot as plt, patches
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, confusion_matrix
 from torch import optim, ops
 from torch.functional import F
 from torch.utils.data import DataLoader
+from torchmetrics.detection import MeanAveragePrecision
 from torchvision.transforms import transforms
 from tqdm import tqdm
 
 from customdataset.atz.atzdetdataset import ATZDetDataset
-from customdataset.atz.dataloader import label_transform, C, wavelet_transform, NORMAL_CLASSES, CLASSE_IDX
+from customdataset.atz.dataloader import label_transform, wavelet_transform, NORMAL_CLASSES, CLASSE_IDX
 from model.FocalLoss import FocalLoss
 from model.dcn import DeformableConv2d
 import numpy as np
@@ -92,7 +93,7 @@ def calculate_iou(bbox1, bbox2):
     return iou
 
 
-def calc_mAP(gt_bboxes, pred_bboxes, pred_scores, iou_threshold=0.5):
+def calc_mAP(gt_bboxes, pred_bboxes, pred_scores, iou_threshold):
     n_images = gt_bboxes.shape[0]
     avg_precision_scores = []
     for i in range(n_images):
@@ -181,7 +182,8 @@ def draw_bbox(writer, model, opt):
                                        no_rand=True,
                                        transform=transform,
                                        random_state=opt.manualseed,
-                                       label_transform=label_transform(C, PATCH_AREA, object_area_threshold),
+                                       label_transform=label_transform(len(CLASSE_IDX), PATCH_AREA,
+                                                                       object_area_threshold),
                                        global_wavelet_transform=wavelet_transform(
                                            atz_wavelet) if opt.atz_wavelet_denoise else None)
         render_bbox_dl = DataLoader(dataset=render_bbox_ds, batch_size=opt.batchsize, shuffle=False, drop_last=False)
@@ -225,7 +227,7 @@ def draw_bbox(writer, model, opt):
     model.train()
 
 
-def evaluate_mAP(epoch_idx, num_epochs, model, test_loader, meta_dict, opt, detailed_output=False, iou_threshold=0.5):
+def evaluate_mAP0(epoch_idx, num_epochs, model, test_loader, meta_dict, opt, detailed_output=False, iou_threshold=0.5):
     print("\nTesting... epoch:[%d/%d]" % (epoch_idx + 1, num_epochs))
     model.eval()
     labels_all, probs_all, gt_bbox_all, prob_bbox_all = [], [], [], []
@@ -268,6 +270,162 @@ def evaluate_mAP(epoch_idx, num_epochs, model, test_loader, meta_dict, opt, deta
         return mean_auc, mAP, auc_list, auc_dict
     else:
         return mean_auc, mAP
+
+
+# helper function
+def add_pr_curve_tensorboard(writer, class_name, class_index, test_probs, test_label, global_step, csv_writer=None):
+    '''
+    Takes in a "class_index" from 0 to 10 and plots the corresponding
+    precision-recall curve
+    '''
+    y_true = test_label == class_index
+    y_pred_proba = test_probs[:, 0, class_index].view(-1, 1)  # probabilities
+
+    # average performance sampled over 127 performance metricsZ
+    accs, f1s, fprs, tprs, prs, rcs = [], [], [], [], [], []
+    numerical_stability = 1e-20
+    num_thresholds = 127
+    for idx, th in enumerate(np.linspace(0.0, 1.0, num_thresholds)):
+        y_pred = y_pred_proba > th
+        confusion_mat = confusion_matrix(y_true.view(-1), y_pred.view(-1), labels=[False, True])
+        # print(confusion_mat.shape, len(y_true.view(-1)), len(y_pred.view(-1)), idx, th, global_step)
+        ((tn, fp), (fn, tp)) = confusion_mat
+        acc = np.sum((tp, tn)) / np.sum((tn, fp, fn, tp))
+        f1 = (2 * tp) / (np.sum((2 * tp, fp, fn)) + numerical_stability)
+        fpr = fp / (np.sum((tn, fp)) + numerical_stability)
+        tpr = tp / (np.sum((tp, fn)) + numerical_stability)
+        pr = tp / (np.sum((tp, fp)) + numerical_stability)
+        rc = tp / (np.sum((tp, fn)) + numerical_stability)
+        accs.append(acc)
+        f1s.append(f1)
+        fprs.append(fpr)
+        tprs.append(tpr)
+        prs.append(pr)
+        rcs.append(rc)
+        aggregator = lambda x: np.mean(x)
+        uacc, uf1, ufpr, utpr = aggregator(accs), aggregator(f1s), aggregator(fprs), aggregator(tprs)
+        upr, urc = aggregator(prs), aggregator(rcs)
+
+        writer.add_scalars('Evaluation-%s' % class_name, {
+            "precision": upr,
+            'recall': urc,
+            'f1_score': uf1,
+            'accuracy': uacc,
+            'fpr': ufpr,
+            'tpr': utpr,
+        }, global_step)
+
+        writer.add_pr_curve(tag=class_name,
+                            labels=y_true,
+                            predictions=y_pred_proba,
+                            num_thresholds=num_thresholds,
+                            global_step=global_step)
+
+
+def evaluate_mAP(writer, classes, num_classes, step, total_step, model, test_loader, opt, iou_threshold,
+                 detailed_output=False, csv_writer=None):
+    labels_all, probs_all, gt_bbox_all, prob_bbox_all = [], [], [], []
+    model.eval()
+    with torch.no_grad():
+        for batch_idx, ((batch_x, batch_y, bboxs), meta) in enumerate(test_loader):
+            print("Testing Epoch:[%d/%d] batch :[%d/%d]....." % (step + 1, total_step, batch_idx + 1, len(test_loader)),
+                  end="\b\r")
+            bboxs_pred, logits_pred = model(batch_x)
+            probs_pred = torch.softmax(logits_pred, dim=-1)
+            # draw prediction box
+            # draw_bbox(bboxs, bboxs_pred, batch_y, probs_pred, classes)
+            # prepare list
+            probs_all.append(probs_pred.cpu().numpy())
+            labels_all.append(batch_y.cpu().numpy())
+            gt_bbox_all.append(bboxs.cpu().numpy())
+            prob_bbox_all.append(bboxs_pred.cpu().numpy())
+
+            # draw curve
+            for class_idx, class_name in enumerate(classes):
+                add_pr_curve_tensorboard(writer, class_name, class_idx,
+                                         probs_pred.detach().cpu(), batch_y.detach().cpu(), step, csv_writer)
+    # flatten the items
+    labels_all = np.concatenate(labels_all)
+    probs_all = np.concatenate(probs_all)
+    gt_bbox_all = np.concatenate(gt_bbox_all)
+    prob_bbox_all = np.concatenate(prob_bbox_all)
+    n_classes = probs_all.shape[1]
+    auc_list = []
+    auc_dict = defaultdict(lambda: [])
+    # calculate AUC
+    for class_idx in range(n_classes):
+        labels_binary = (labels_all == class_idx).astype(int)
+        # auc score
+        try:
+            auc = roc_auc_score(labels_binary, probs_all[:, class_idx])
+        except ValueError:
+            # this happens when a batch contains negative or positive samples as ground_truth
+            auc = 0.0
+        auc_list.append(auc)
+        auc_dict[class_idx].append(auc)
+    mean_auc = np.mean(auc_list)
+    for key, values in auc_dict.items():
+        auc_dict[key] = np.mean(values)
+
+    # mAP score
+    # mAP = calc_mAP(gt_bbox_all, prob_bbox_all, probs_all, iou_threshold=iou_threshold)
+
+    preds = []
+    target = []
+    for gt_blb, prob, gt_bbox, pred_bbox in zip(labels_all, probs_all, gt_bbox_all, prob_bbox_all):
+        preds.append(dict(
+            boxes=torch.tensor(pred_bbox),
+            scores=torch.tensor([prob[0][gt_blb[0]]]),
+            labels=torch.tensor(gt_blb),
+        ))
+        target.append(dict(
+            boxes=torch.tensor(gt_bbox),
+            labels=torch.tensor(gt_blb),
+        ))
+    metric0 = MeanAveragePrecision(box_format='xywh', iou_type='bbox', iou_thresholds=[0.2],
+                                   class_metrics=True)
+    metric1 = MeanAveragePrecision(box_format='xywh', iou_type='bbox', iou_thresholds=[iou_threshold],
+                                   class_metrics=True)
+    metric2 = MeanAveragePrecision(box_format='xywh', iou_type='bbox',
+                                   iou_thresholds=list(np.arange(0.5, 0.95, 0.05, dtype="float")), class_metrics=True)
+    metric3 = MeanAveragePrecision(box_format='xywh', iou_type='bbox',
+                                   iou_thresholds=list(np.arange(0.05, 0.5, 0.05, dtype="float")), class_metrics=True)
+    metric0.update(preds, target)
+    metric1.update(preds, target)
+    metric2.update(preds, target)
+    metric3.update(preds, target)
+
+    result0 = metric0.compute()
+    result1 = metric1.compute()
+    result2 = metric2.compute()
+    result3 = metric3.compute()
+
+    map0 = result0['map'].item()
+    map1 = result1['map'].item()
+    map2 = result2['map'].item()
+    map3 = result3['map'].item()
+
+    writer.add_scalars('Testing_mAP', {
+        "_02": map0,
+        "_%0.2f" % iou_threshold: map1,
+        "_[005_05]": map3,
+        "_[05_095]": map2
+    }, batch_idx)
+    print(result0, result1, result2, result3)
+    writer.add_scalars('Testing_Class_mAP_02',
+                       {classes[idx]: k.item() for idx, k in enumerate(result0['map_per_class'])}, batch_idx)
+    writer.add_scalars('Testing_Class_mAP_%f' % iou_threshold,
+                       {classes[idx]: k.item() for idx, k in enumerate(result1['map_per_class'])}, batch_idx)
+
+    writer.add_scalars('Testing_Class_mAP[05_095]',
+                       {classes[idx]: k.item() for idx, k in enumerate(result2['map_per_class'])}, batch_idx)
+    writer.add_scalars('Testing_Class_mAP[005_05]',
+                       {classes[idx]: k.item() for idx, k in enumerate(result3['map_per_class'])}, batch_idx)
+    model.train()
+    if detailed_output:
+        return mean_auc, map1, auc_list, auc_dict
+    else:
+        return mean_auc, map1
 
 
 def train_one_batch(num_classes, model, images, labels, bboxes, optimizer, criterion_class_loss, criterion_bbox_loss):
@@ -376,8 +534,9 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         draw_bbox(writer, net, opt)
         # test
         detailed = True
-        auc, mAP, auc_ls, auc_dict = evaluate_mAP(epoch_idx, num_epochs, net, test_loader, meta_dict, opt,
-                                                  detailed_output=detailed, iou_threshold=opt.iou)
+        auc, mAP, auc_ls, auc_dict = evaluate_mAP(writer, classes, len(classes), epoch_idx, num_epochs, net,
+                                                  test_loader, opt,
+                                                  opt.iou, detailed_output=detailed, )
         if auc > max_auc \
                 or any([cls_auc > perclass_max_auc[cls_idx] for cls_idx, cls_auc in auc_dict.items()]) \
                 or mAP > max_mAP:
@@ -404,3 +563,5 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
         print(
             f"]. MAX AUC:{max_auc:.2f}@epoch-{max_auc_epoch} MAX mAP{max_mAP:.2f}@epoch-{max_mAP_epoch}")
     print('Finished LeNet Training')
+    writer.flush()
+    writer.close()

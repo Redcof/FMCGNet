@@ -90,12 +90,13 @@ class ATZDetDataset(Dataset):
         if atz_dataset_train_or_test_txt:
             with open(atz_dataset_train_or_test_txt, "r") as fp:
                 file_names = ["%s.jpg" % line.strip().replace(".jpg", "") for line in fp.readlines()]
-        if self.object_only:
-            try:
-                self.df = self.df[self.df['relative_x1y1x2y2'].notna()]
-            except:
-                ...
-            self.df = self.df[self.df['label_txt'] != "NORMAL0"]
+        # if self.object_only:
+        #     try:
+        #         self.df = self.df[self.df['relative_x1y1x2y2'].notna()]
+        #     except:
+        #         ...
+        self.df = self.df[self.df['label_txt'] != "NORMAL0"]
+        self.df['label'] = self.df['label'].apply(lambda x: x - 1)
         if file_names:
             # filter dataframe
             self.df = self.df[self.df["image"].isin(file_names)]
@@ -146,6 +147,10 @@ class ATZDetDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
+
+    @property
+    def targets(self):
+        return self.df['is_anamoly']
 
     def get_meta(self, idx):
         record = self.df.iloc[idx, :]

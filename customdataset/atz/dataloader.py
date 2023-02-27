@@ -19,11 +19,10 @@ from customdataset.atz.atzdetdataset import ATZDetDataset
 from preprocessing.image_transform import wavelet_denoise_rgb
 
 NORMAL_CLASSES = ["NORMAL0", "NORMAL1"]
-CLASSE_IDX = ["NORMAL0", "UNKNOWN", "CP", "MD", "GA", "KK", "SS", "KC", "WB", "LW", "CK", "CL"]
-C = len(CLASSE_IDX)
+CLASSE_IDX = ["UNKNOWN", "CP", "MD", "GA", "KK", "SS", "KC", "WB", "LW", "CK", "CL"]
 
 
-def label_transform(C, PATCH_AREA, object_area_threshold):
+def label_transform(num_classes, PATCH_AREA, object_area_threshold):
     """ This label transform is designed for SAGAN.
     Return 0 for normal images and 1 for abnormal images """
 
@@ -35,7 +34,7 @@ def label_transform(C, PATCH_AREA, object_area_threshold):
             object_area_percent = anomaly_size_px / PATCH_AREA
         else:
             object_area_percent = 0
-        onehot_labels = np.zeros((1, C))
+        onehot_labels = np.zeros((1, num_classes))
         if (label in NORMAL_CLASSES
                 or anomaly_size_px == 0
                 # not in iou range
@@ -125,6 +124,7 @@ def load_atz_data(opt, transform=None):
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,)),
         ])
+    num_classes = len(CLASSE_IDX)
 
     train_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
                              object_only=opt.detection,
@@ -141,8 +141,9 @@ def load_atz_data(opt, transform=None):
                              nc=opt.nc,
                              transform=transform,
                              random_state=opt.manualseed,
-                             label_transform=label_transform(C, PATCH_AREA, object_area_threshold),
-                             global_wavelet_transform=wavelet_transform(atz_wavelet) if opt.atz_wavelet_denoise else None)
+                             label_transform=label_transform(num_classes, PATCH_AREA, object_area_threshold),
+                             global_wavelet_transform=wavelet_transform(
+                                 atz_wavelet) if opt.atz_wavelet_denoise else None)
 
     test_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
                             object_only=opt.detection,
@@ -159,8 +160,9 @@ def load_atz_data(opt, transform=None):
                             nc=opt.nc,
                             transform=transform,
                             random_state=opt.manualseed,
-                            label_transform=label_transform(C, PATCH_AREA, object_area_threshold),
-                            global_wavelet_transform=wavelet_transform(atz_wavelet) if opt.atz_wavelet_denoise else None)
+                            label_transform=label_transform(num_classes, PATCH_AREA, object_area_threshold),
+                            global_wavelet_transform=wavelet_transform(
+                                atz_wavelet) if opt.atz_wavelet_denoise else None)
 
     valid_ds = ATZDetDataset(patch_dataset_csv, opt.dataroot, "test",
                              object_only=opt.detection,
@@ -177,8 +179,9 @@ def load_atz_data(opt, transform=None):
                              nc=opt.nc,
                              transform=transform,
                              random_state=opt.manualseed,
-                             label_transform=label_transform(C, PATCH_AREA, object_area_threshold),
-                             global_wavelet_transform=wavelet_transform(atz_wavelet) if opt.atz_wavelet_denoise else None)
+                             label_transform=label_transform(num_classes, PATCH_AREA, object_area_threshold),
+                             global_wavelet_transform=wavelet_transform(
+                                 atz_wavelet) if opt.atz_wavelet_denoise else None)
     opt.log("Train Dataset '%s' => Normal:Abnormal = %d:%d" % ("train", train_ds.normal_count, train_ds.abnormal_count))
     opt.log("Test Dataset '%s' => Normal:Abnormal = %d:%d" % ("test", test_ds.normal_count, test_ds.abnormal_count))
     opt.log(

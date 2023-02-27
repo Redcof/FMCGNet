@@ -73,14 +73,15 @@ def get_batch_of_hybrid_image(x_batch, y_batch, opt, classes):
             ineg = x_batch[batch_idx + 3]
         ineg = ineg.clone().detach().cpu().numpy().reshape((opt.isize, opt.isize, opt.nc))
         ipos = x_batch[batch_idx].clone().detach().cpu().numpy().reshape((opt.isize, opt.isize, opt.nc))
-        npimage = hybrid_negative_image(opt, classes[cls_idx], ipos=ipos, ineg=ineg)
+        # create hybrid image
+        npimage = hybrid_negative_image(opt, classes[cls_idx], initial_dim=opt.nc, ipos=ipos, ineg=ineg)
         pil = Image.fromarray(npimage)
         npimage = np.array(opt.transform(pil))
         hybrid_b[batch_idx, :, :, :] = torch.from_numpy(npimage.reshape((opt.nc, opt.isize, opt.isize)))
     return hybrid_b.to(opt.device)
 
 
-def hybrid_negative_image(opt, class_lbl, ipos=None, ineg=None):
+def hybrid_negative_image(opt, class_lbl, initial_dim=3, ipos=None, ineg=None):
     """
     From original paper: "The Forward-Forward Algorithm: Some Preliminary Investigations"
     To force FF to focus on the longer range correlations in images that characterize shapes, we need
@@ -150,9 +151,16 @@ is then threshold at 0.5.
         if ineg is None:
             sample2 = df[(df['label_txt'] != class_lbl) & (df['anomaly_size'] >= 0.0)].sample(1)
             ineg = get_patch(sample2, opt)
-
-    ipos = cv2.cvtColor(ipos, cv2.COLOR_RGB2GRAY)
-    ineg = cv2.cvtColor(ineg, cv2.COLOR_RGB2GRAY)
+    assert ipos.shape == ineg.shape, \
+        f"Shape of positive and negative images must be same: Positive:{ipos.shape} and Negative:{ineg.shape}"
+    if ipos.ndim == 3 and ipos.shape[2] == 3:
+        ipos = cv2.cvtColor(ipos, cv2.COLOR_RGB2GRAY)
+    else:
+        ipos = ipos.reshape(ipos.shape[0], ipos.shape[1])
+    if ineg.ndim == 3 and ineg.shape[2] == 3:
+        ineg = cv2.cvtColor(ineg, cv2.COLOR_RGB2GRAY)
+    else:
+        ineg = ineg.reshape(ineg.shape[0], ineg.shape[1])
 
     ipos = cv2.normalize(ipos, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     ineg = cv2.normalize(ineg, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
@@ -176,7 +184,8 @@ is then threshold at 0.5.
     #     plt.imshow(img, cmap="Greys_r")
     #     # cv2.imshow(title[idx], img)
     # plt.show()
-    hybrid = cv2.cvtColor(hybrid, cv2.COLOR_GRAY2RGB)
+    if initial_dim == 3:
+        hybrid = cv2.cvtColor(hybrid, cv2.COLOR_GRAY2RGB)
     return hybrid
 
 
@@ -320,6 +329,7 @@ class LeNetFF(nn.Module):
 
     @staticmethod
     def loss_log(layer):
+        return
         try:
             print("\tLayer-", layer.layer_no, "Loss:", layer.loss, "Goodness:", layer.goodness_val)
         except:
@@ -328,12 +338,12 @@ class LeNetFF(nn.Module):
     def train(self, x_pos, x_neg, batch_idx):
         h_pos, h_neg = x_pos, x_neg
         for idx, layer in enumerate(self.layers):
-            print('\tTraining Layer:[%d/%d]...' % (idx, LeNetFF.LAYER_NO))
+            # print('\tTraining Layer:[%d/%d]...' % (idx, LeNetFF.LAYER_NO))
             layer.batch_idx = batch_idx
             h_pos, h_neg = layer.train(h_pos, h_neg)
             self.loss_log(layer)
         if self.detection:
-            print('\tTraining Layer:[%d/%d]...' % (LeNetFF.LAYER_NO, LeNetFF.LAYER_NO))
+            # print('\tTraining Layer:[%d/%d]...' % (LeNetFF.LAYER_NO, LeNetFF.LAYER_NO))
             self.classify.train(h_pos, h_neg, self.ground_truth_class)
             self.regress.train(h_pos, h_neg, self.ground_truth_bbox)
             self.loss_log(self.regress)
@@ -379,7 +389,7 @@ class FFLayer(nn.Module):
         # The following loss pushes pos (neg) samples to
         # values larger (smaller) than the self.threshold.
         val = torch.cat([-goodness_pos + self.threshold, goodness_neg - self.threshold])
-        loss = torch.log(1 + torch.exp(val)).mean()
+        loss = torch.log(1 + torch.exp(val)).mean() # loss function
         if self.writer:
             self.writer.add_scalars('Goodness', {"Layer-%d" % self.layer_no: goodness_pos.mean()},
                                     self.batch_idx + 1)
@@ -389,19 +399,18 @@ class FFLayer(nn.Module):
         return loss
 
     def train(self, x_pos, x_neg, ground_truth=None):
-        for epoch_idx in tqdm(range(self.num_epochs)):
+        f_pos = self.forward(x_pos)
+        f_neg = self.forward(x_neg)
+        # calculate loss
+        loss = self.calculate_loss(f_pos, f_neg)
+        if self.calculate_additional_loss is not None and ground_truth is not None:
             f_pos = self.forward(x_pos)
-            f_neg = self.forward(x_neg)
-            # calculate loss
-            loss = self.calculate_loss(f_pos, f_neg)
-            if self.calculate_additional_loss is not None and ground_truth is not None:
-                f_pos = self.forward(x_pos)
-                loss = self.calculate_additional_loss(f_pos, ground_truth, loss)
-            self.optimizer.zero_grad()  # set gradients to 0
-            # this backward just compute the derivative and hence
-            # is not considered backpropagation.
-            loss.backward()  # backprop loss in layer
-            self.optimizer.step()  # update weights
+            loss = self.calculate_additional_loss(f_pos, ground_truth, loss)
+        self.optimizer.zero_grad()  # set gradients to 0
+        # this backward just compute the derivative and hence
+        # is not considered backpropagation.
+        loss.backward()  # backprop loss in layer
+        self.optimizer.step()  # update weights
         return self.forward(x_pos).detach(), self.forward(x_neg).detach()
 
 
@@ -767,6 +776,8 @@ def train_loop(opt, classes, writer, train_loader, test_loader, val_loader):
     # # save the model
     # torch.save({'epoch': epoch_idx, 'state_dict': net.state_dict()},
     #            f'{str(weight_dir)}/net_last.pth' % (epoch_idx, auc))
+    writer.flush()
+    writer.close()
 
 
 if __name__ == '__main__':
